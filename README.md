@@ -5,6 +5,8 @@ SwiftUI menu bar app for monitoring macOS GPU and memory stats.
 > [!NOTE]
 > This app was vibe coded using Claude Opus 4.6 and GPT-5.4. The macOS stats shown here come from a mix of Mach VM APIs, `sysctl`, `ps`, and `ioreg`, and some of the displayed categories are approximations rather than exact Activity Monitor equivalents.
 
+![Screenshot of the Gpuer app on macOS showing memory usage for an Apple M5 Max with 40 GPU cores. Left panel: a large orange "38 GB Available" readout showing usage of 128.0 GB unified memory, "Room for ~18 more large apps before pressure", a warning banner reading "1.5 GB pushed to disk — system was under pressure recently", a horizontal segmented bar chart labeled "Where your memory is going" with green, blue, and grey segments and a legend, an explanatory note about GPU unified memory, a GPU Utilization section showing 0%, and a History graph showing Available and GPU Utilization over time as line charts. Right panel: a Memory Footprint list sorted by Memory, showing process names with horizontal pink/purple usage bars and CPU percentage labels beside each entry, covering processes including Dropbox, WebKit, Virtualization, node, Claude Helper, Safari, LM Studio, WindowServer, Finder, and others.](https://github.com/simonw/gpuer/raw/main/screenshot.png)
+
 ## Features
 
 - **"Available" headline** showing how much unified memory you can still use, with a plain-English estimate of headroom
