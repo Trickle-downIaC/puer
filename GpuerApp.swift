@@ -20,6 +20,8 @@ struct MemoryStats {
 
     var usedFraction: Double { Double(usedBytes) / Double(max(totalBytes, 1)) }
     var freeFraction: Double { Double(freeBytes) / Double(max(totalBytes, 1)) }
+    var availableBytes: UInt64 { freeBytes + inactiveBytes }  // everything OS can reclaim
+    var availableFraction: Double { Double(availableBytes) / Double(max(totalBytes, 1)) }
 }
 
 struct GPUStats {
@@ -203,6 +205,18 @@ func readGPUStats() -> GPUStats {
                     coreCount: coreCount, model: model)
 }
 
+// MARK: - Physical Footprint (accurate memory, same metric as Activity Monitor)
+
+func getPhysFootprint(_ pid: Int32) -> UInt64 {
+    var info = rusage_info_v4()
+    let result = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
+        ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reboundPtr in
+            proc_pid_rusage(pid, Int32(RUSAGE_INFO_V4), reboundPtr)
+        }
+    }
+    return result == 0 ? info.ri_phys_footprint : 0
+}
+
 // MARK: - Top Processes by Memory
 
 func readTopProcesses(limit: Int = 30) -> [ProcessMemory] {
@@ -227,27 +241,30 @@ func readTopProcesses(limit: Int = 30) -> [ProcessMemory] {
         guard let rssKB = Double(cols[1]) else { continue }
         guard let cpu = Double(cols[2]) else { continue }
         var name = String(cols[3])
-        // Trim path to just the binary name
         if let lastSlash = name.lastIndex(of: "/") {
             name = String(name[name.index(after: lastSlash)...])
         }
-        let mb = rssKB / 1024.0
-        if mb < 1 { continue } // skip tiny processes
+        // Use physical footprint (accurate) instead of RSS (inflated by shared pages)
+        let footprint = getPhysFootprint(Int32(pid))
+        let mb = footprint > 0 ? Double(footprint) / 1_048_576.0 : rssKB / 1024.0
+        if mb < 1 { continue }
         results.append(ProcessMemory(id: "\(name).\(pid)", name: name, pid: pid, residentMB: mb, cpuPercent: cpu))
     }
 
     // Aggregate by process name
-    var aggregated: [String: (totalMB: Double, totalCPU: Double, pids: [Int])] = [:]
+    var aggregated: [String: (totalMB: Double, totalCPU: Double, pids: [Int], count: Int)] = [:]
     for p in results {
-        var entry = aggregated[p.name] ?? (totalMB: 0, totalCPU: 0, pids: [])
+        var entry = aggregated[p.name] ?? (totalMB: 0, totalCPU: 0, pids: [], count: 0)
         entry.totalMB += p.residentMB
         entry.totalCPU += p.cpuPercent
         entry.pids.append(p.pid)
+        entry.count += 1
         aggregated[p.name] = entry
     }
 
     return aggregated.map { name, data in
-        ProcessMemory(id: name, name: name, pid: data.pids.first ?? 0,
+        let displayName = data.count > 1 ? "\(name) (\(data.count))" : name
+        return ProcessMemory(id: name, name: displayName, pid: data.pids.first ?? 0,
                       residentMB: data.totalMB, cpuPercent: data.totalCPU)
     }
     .sorted { $0.residentMB > $1.residentMB }
@@ -564,37 +581,155 @@ struct ProcessRowView: View {
 struct ContentView: View {
     @StateObject private var monitor = SystemMonitor()
 
+    private var availableGB: Double {
+        Double(monitor.memoryStats.availableBytes) / 1_073_741_824
+    }
+    private var totalGB: Double {
+        Double(monitor.memoryStats.totalBytes) / 1_073_741_824
+    }
+    private var headroomColor: Color {
+        let frac = monitor.memoryStats.availableFraction
+        if frac > 0.3 { return .green }
+        if frac > 0.15 { return .orange }
+        return .red
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // Header
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Gpuer")
-                            .font(.system(size: 20, weight: .bold))
-                        Text("\(monitor.gpuStats.model) \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
+        HStack(alignment: .top, spacing: 0) {
+            // LEFT COLUMN
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Header
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Gpuer")
+                                .font(.system(size: 20, weight: .bold))
+                            Text("\(monitor.gpuStats.model) \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+
+                    // HEADLINE: Available memory
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(String(format: "%.0f", availableGB))
+                                .font(.system(size: 48, weight: .bold, design: .rounded))
+                                .foregroundColor(headroomColor)
+                            Text("GB Available")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(headroomColor.opacity(0.8))
+                        }
+                        Text("of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                        let appsEstimate = max(1, Int(availableGB / 2))
+                        Text("Room for ~\(appsEstimate) more large apps before pressure")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(formatMemory(monitor.memoryStats.totalBytes) + " unified memory")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.secondary)
-                        if monitor.memoryStats.swapUsedBytes > 0 {
-                            Text("Swap: " + formatMemory(monitor.memoryStats.swapUsedBytes))
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(headroomColor.opacity(0.06))
+                    .cornerRadius(12)
+
+                    // Swap warning
+                    if monitor.memoryStats.swapUsedBytes > 0 {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                                .font(.system(size: 11))
+                            Text("\(formatMemory(monitor.memoryStats.swapUsedBytes)) pushed to disk \u{2014} system was under pressure recently")
                                 .font(.system(size: 11))
                                 .foregroundColor(.orange)
-                        } else {
-                            Text("No swap in use")
-                                .font(.system(size: 11))
-                                .foregroundColor(.green)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.08))
+                        .cornerRadius(6)
+                    }
+
+                    // UNIFIED MEMORY POOL
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Where your memory is going")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        let total = Double(max(monitor.memoryStats.totalBytes, 1))
+                        let gpuAlloc = Double(monitor.gpuStats.allocatedMemory)
+                        let gpuActive = Double(monitor.gpuStats.inUseMemory)
+                        let available = Double(monitor.memoryStats.availableBytes)
+                        let gpuShown = min(gpuAlloc, total - available)
+                        let otherUsed = max(0, total - gpuShown - available)
+
+                        // Thick unified bar
+                        GeometryReader { geo in
+                            let w = geo.size.width
+                            HStack(spacing: 0) {
+                                // GPU active (bright green)
+                                Rectangle()
+                                    .fill(Color.green)
+                                    .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
+                                // GPU mapped idle (lighter green)
+                                Rectangle()
+                                    .fill(Color.green.opacity(0.3))
+                                    .frame(width: max(0, w * CGFloat(max(0, gpuShown - gpuActive) / total)))
+                                // Other used (blue)
+                                Rectangle()
+                                    .fill(Color.blue.opacity(0.6))
+                                    .frame(width: max(0, w * CGFloat(otherUsed / total)))
+                                // Available (empty space)
+                                Spacer(minLength: 0)
+                            }
+                            .frame(height: 36)
+                            .background(Color.primary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .frame(height: 36)
+
+                        // Legend
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 14) {
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.green).frame(width: 10, height: 10)
+                                    Text("GPU active \(formatMemory(monitor.gpuStats.inUseMemory))")
+                                        .font(.system(size: 10))
+                                }
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.green.opacity(0.3)).frame(width: 10, height: 10)
+                                    Text("GPU mapped \(formatMemory(monitor.gpuStats.allocatedMemory))")
+                                        .font(.system(size: 10))
+                                }
+                            }
+                            HStack(spacing: 14) {
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.blue.opacity(0.6)).frame(width: 10, height: 10)
+                                    Text("Apps & OS \(formatMemory(UInt64(otherUsed)))")
+                                        .font(.system(size: 10))
+                                }
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(Color.primary.opacity(0.06)).frame(width: 10, height: 10)
+                                        .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.primary.opacity(0.15), lineWidth: 1))
+                                    Text("Available \(formatMemory(UInt64(available)))")
+                                        .font(.system(size: 10))
+                                }
+                            }
+                        }
+                        .foregroundColor(.secondary)
+
+                        // Contextual explanation
+                        if monitor.gpuStats.allocatedMemory > 10_000_000_000 {
+                            Text("GPU has mapped \(formatMemory(monitor.gpuStats.allocatedMemory)) of your unified memory (likely model weights for local AI). This isn\u{2019}t separate VRAM \u{2014} it\u{2019}s your RAM, shared with the GPU.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 2)
                         }
                     }
-                }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
 
-                // Top-level cards
-                HStack(spacing: 10) {
+                    // GPU UTILIZATION
                     RateCardView(
                         title: "GPU UTILIZATION",
                         value: "\(monitor.gpuStats.deviceUtilization)%",
@@ -602,162 +737,81 @@ struct ContentView: View {
                         icon: "gpu",
                         color: .green
                     )
-                    RateCardView(
-                        title: "MEMORY LOAD",
-                        value: String(format: "%.0f%%", monitor.memoryStats.pressure * 100),
-                        subtitle: "Derived from system free percentage",
-                        icon: "memorychip",
-                        color: monitor.memoryStats.pressure > 0.7 ? .red : (monitor.memoryStats.pressure > 0.4 ? .orange : .blue)
-                    )
-                }
 
-                // Memory breakdown bar
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader(title: "Memory Breakdown", icon: "memorychip")
+                    // HISTORY
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("History (2 min)")
+                            .font(.system(size: 12, weight: .semibold))
 
-                    let total = Double(max(monitor.memoryStats.totalBytes, 1))
-                    let segments: [(Double, Color)] = [
-                        (Double(monitor.memoryStats.wiredBytes) / total, .red.opacity(0.8)),
-                        (Double(monitor.memoryStats.appBytes) / total, .blue.opacity(0.8)),
-                        (Double(monitor.memoryStats.compressedBytes) / total, .orange.opacity(0.8)),
-                    ]
-                    UsageBarView(segments: segments)
-
-                    HStack(spacing: 16) {
-                        HStack(spacing: 4) {
-                            Circle().fill(.red.opacity(0.8)).frame(width: 8, height: 8)
-                            Text("Wired \(formatMemory(monitor.memoryStats.wiredBytes))")
-                                .font(.system(size: 10))
-                        }
-                        HStack(spacing: 4) {
-                            Circle().fill(.blue.opacity(0.8)).frame(width: 8, height: 8)
-                            Text("App Approx \(formatMemory(monitor.memoryStats.appBytes))")
-                                .font(.system(size: 10))
-                        }
-                        HStack(spacing: 4) {
-                            Circle().fill(.orange.opacity(0.8)).frame(width: 8, height: 8)
-                            Text("Compressed \(formatMemory(monitor.memoryStats.compressedBytes))")
-                                .font(.system(size: 10))
-                        }
-                        Spacer()
-                        Text("Free \(formatMemory(monitor.memoryStats.freeBytes))")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    .foregroundColor(.secondary)
-                }
-                .padding(10)
-                .background(Color.primary.opacity(0.03))
-                .cornerRadius(8)
-
-                // GPU memory bar
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader(title: "GPU Tracked Memory", icon: "gpu")
-
-                    let total = Double(max(monitor.memoryStats.totalBytes, 1))
-                    let inUseFrac = Double(monitor.gpuStats.inUseMemory) / total
-                    let allocFrac = Double(monitor.gpuStats.allocatedMemory) / total
-
-                    UsageBarView(segments: [
-                        (inUseFrac, .green.opacity(0.8)),
-                        (allocFrac - inUseFrac, .green.opacity(0.25)),
-                    ])
-
-                    HStack(spacing: 16) {
-                        HStack(spacing: 4) {
-                            Circle().fill(.green.opacity(0.8)).frame(width: 8, height: 8)
-                            Text("In Use \(formatMemory(monitor.gpuStats.inUseMemory))")
-                                .font(.system(size: 10))
-                        }
-                        HStack(spacing: 4) {
-                            Circle().fill(.green.opacity(0.25)).frame(width: 8, height: 8)
-                            Text("Tracked Alloc \(formatMemory(monitor.gpuStats.allocatedMemory))")
-                                .font(.system(size: 10))
-                        }
-                        Spacer()
-                        Text("of \(formatMemory(monitor.memoryStats.totalBytes)) unified")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    .foregroundColor(.secondary)
-                }
-                .padding(10)
-                .background(Color.primary.opacity(0.03))
-                .cornerRadius(8)
-
-                // History sparklines
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader(title: "History (last 2 min)", icon: "chart.xyaxis.line")
-
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Memory Used")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            SparklineView(data: monitor.memoryHistory, color: .blue, maxValue: 1.0)
-                                .frame(height: 50)
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("GPU Utilization")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            SparklineView(data: monitor.gpuHistory.map { Double($0) }, color: .green, maxValue: 100.0)
-                                .frame(height: 50)
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("GPU Tracked")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                            SparklineView(data: monitor.gpuMemHistory, color: .teal, maxValue: 1.0)
-                                .frame(height: 50)
-                        }
-                    }
-                }
-                .padding(10)
-                .background(Color.primary.opacity(0.03))
-                .cornerRadius(8)
-
-                // Per-process memory
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        SectionHeader(title: "Top Processes by Memory", icon: "cpu")
-                        Spacer()
-                        let totalProc = monitor.processes.reduce(0.0) { $0 + $1.residentMB }
-                        Text("\(monitor.processes.count) processes \u{2022} \(formatMB(totalProc))")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-
-                    // Sort controls
-                    HStack(spacing: 12) {
-                        Text("Sort:")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                        ForEach(ProcessSortKey.allCases, id: \.self) { key in
-                            SortButton(
-                                label: key.rawValue, key: key,
-                                currentKey: $monitor.processSortKey,
-                                ascending: $monitor.processSortAscending,
-                                action: { monitor.resortProcesses() }
-                            )
-                        }
-                    }
-
-                    let maxMB = monitor.processes.map(\.residentMB).max() ?? 1.0
-
-                    if monitor.processes.isEmpty {
-                        HStack {
-                            Spacer()
-                            VStack(spacing: 4) {
-                                ProgressView().scaleEffect(0.7)
-                                Text("Loading processes...")
-                                    .font(.system(size: 11))
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Available")
+                                    .font(.system(size: 10))
                                     .foregroundColor(.secondary)
+                                SparklineView(data: monitor.memoryHistory.map { 1.0 - $0 }, color: headroomColor, maxValue: 1.0)
+                                    .frame(height: 44)
                             }
-                            .padding(.vertical, 20)
-                            Spacer()
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("GPU Utilization")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                SparklineView(data: monitor.gpuHistory.map { Double($0) }, color: .green, maxValue: 100.0)
+                                    .frame(height: 44)
+                            }
                         }
-                    } else {
+                    }
+                    .padding(10)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+                }
+                .padding(16)
+            }
+            .frame(width: 520)
+
+            Divider()
+
+            // RIGHT COLUMN: Process footprints
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    SectionHeader(title: "Memory Footprint", icon: "cpu")
+                    Spacer()
+                    let totalProc = monitor.processes.reduce(0.0) { $0 + $1.residentMB }
+                    Text("\(monitor.processes.count) \u{2022} \(formatMB(totalProc))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Text("Sort:")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    ForEach(ProcessSortKey.allCases, id: \.self) { key in
+                        SortButton(
+                            label: key.rawValue, key: key,
+                            currentKey: $monitor.processSortKey,
+                            ascending: $monitor.processSortAscending,
+                            action: { monitor.resortProcesses() }
+                        )
+                    }
+                }
+
+                let maxMB = monitor.processes.map(\.residentMB).max() ?? 1.0
+
+                if monitor.processes.isEmpty {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 4) {
+                            ProgressView().scaleEffect(0.7)
+                            Text("Loading...")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                    Spacer()
+                } else {
+                    ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(monitor.processes) { proc in
                                 ProcessRowView(proc: proc, maxMB: maxMB)
@@ -766,13 +820,11 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(10)
-                .background(Color.primary.opacity(0.03))
-                .cornerRadius(8)
             }
-            .padding(16)
+            .padding(12)
+            .frame(width: 320)
         }
-        .frame(width: 560, height: 860)
+        .frame(width: 840, height: 700)
         .background(.background)
     }
 }
@@ -793,7 +845,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 560, height: 860)
+        popover.contentSize = NSSize(width: 840, height: 700)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: ContentView())
         self.popover = popover
