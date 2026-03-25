@@ -14,9 +14,9 @@ struct MemoryStats {
     let wiredBytes: UInt64
     let compressedBytes: UInt64
     let freeBytes: UInt64
-    let appBytes: UInt64  // app memory = used - wired - compressed
+    let appBytes: UInt64  // approximate app-associated memory
     let swapUsedBytes: UInt64
-    let pressure: Double  // 0.0 - 1.0
+    let pressure: Double  // derived from 1 - system-wide free percentage
 
     var usedFraction: Double { Double(usedBytes) / Double(max(totalBytes, 1)) }
     var freeFraction: Double { Double(freeBytes) / Double(max(totalBytes, 1)) }
@@ -87,7 +87,7 @@ func getMemoryPressure() -> Double {
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     proc.waitUntilExit()
     guard let output = String(data: data, encoding: .utf8) else { return 0 }
-    // Look for "System-wide memory free percentage: XX%"
+    // Derived from "System-wide memory free percentage: XX%"
     if let range = output.range(of: "free percentage: ") {
         let after = output[range.upperBound...]
         if let pctEnd = after.firstIndex(of: "%"), let pct = Int(after[after.startIndex..<pctEnd]) {
@@ -115,7 +115,7 @@ func readMemoryStats() -> MemoryStats {
     let free = UInt64(vm.free_count) * pageSize
     let purgeable = UInt64(vm.purgeable_count) * pageSize
 
-    // "Used" = total - free - speculative - purgeable (similar to Activity Monitor)
+    // Approximate used memory = total - free - speculative - purgeable
     let usedApprox = total - free - speculative - purgeable
     let appMem = active + inactive - purgeable
     let swap = getSwapUsage()
@@ -586,7 +586,7 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.orange)
                         } else {
-                            Text("No swap pressure")
+                            Text("No swap in use")
                                 .font(.system(size: 11))
                                 .foregroundColor(.green)
                         }
@@ -603,9 +603,9 @@ struct ContentView: View {
                         color: .green
                     )
                     RateCardView(
-                        title: "MEMORY PRESSURE",
+                        title: "MEMORY LOAD",
                         value: String(format: "%.0f%%", monitor.memoryStats.pressure * 100),
-                        subtitle: "\(formatMemory(monitor.memoryStats.usedBytes)) used of \(formatMemory(monitor.memoryStats.totalBytes))",
+                        subtitle: "Derived from system free percentage",
                         icon: "memorychip",
                         color: monitor.memoryStats.pressure > 0.7 ? .red : (monitor.memoryStats.pressure > 0.4 ? .orange : .blue)
                     )
@@ -631,7 +631,7 @@ struct ContentView: View {
                         }
                         HStack(spacing: 4) {
                             Circle().fill(.blue.opacity(0.8)).frame(width: 8, height: 8)
-                            Text("App \(formatMemory(monitor.memoryStats.appBytes))")
+                            Text("App Approx \(formatMemory(monitor.memoryStats.appBytes))")
                                 .font(.system(size: 10))
                         }
                         HStack(spacing: 4) {
@@ -652,7 +652,7 @@ struct ContentView: View {
 
                 // GPU memory bar
                 VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader(title: "GPU Memory", icon: "gpu")
+                    SectionHeader(title: "GPU Tracked Memory", icon: "gpu")
 
                     let total = Double(max(monitor.memoryStats.totalBytes, 1))
                     let inUseFrac = Double(monitor.gpuStats.inUseMemory) / total
@@ -671,7 +671,7 @@ struct ContentView: View {
                         }
                         HStack(spacing: 4) {
                             Circle().fill(.green.opacity(0.25)).frame(width: 8, height: 8)
-                            Text("Allocated \(formatMemory(monitor.gpuStats.allocatedMemory))")
+                            Text("Tracked Alloc \(formatMemory(monitor.gpuStats.allocatedMemory))")
                                 .font(.system(size: 10))
                         }
                         Spacer()
@@ -705,7 +705,7 @@ struct ContentView: View {
                                 .frame(height: 50)
                         }
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("GPU Memory")
+                            Text("GPU Tracked")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                             SparklineView(data: monitor.gpuMemHistory, color: .teal, maxValue: 1.0)
