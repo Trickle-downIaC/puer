@@ -20,7 +20,7 @@ struct MemoryStats {
 
     var usedFraction: Double { Double(usedBytes) / Double(max(totalBytes, 1)) }
     var freeFraction: Double { Double(freeBytes) / Double(max(totalBytes, 1)) }
-    var availableBytes: UInt64 { freeBytes + inactiveBytes }  // everything OS can reclaim
+    var availableBytes: UInt64 { totalBytes - usedBytes }  // everything OS can reclaim
     var availableFraction: Double { Double(availableBytes) / Double(max(totalBytes, 1)) }
 }
 
