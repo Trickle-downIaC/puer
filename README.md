@@ -25,7 +25,7 @@ Gpuer uses macOS system interfaces and command-line tools rather than private fr
 
 - Total physical memory comes from `sysctl hw.memsize`.
 - Memory breakdown comes from `host_statistics64(HOST_VM_INFO64)`, using page counters such as active, inactive, wired, compressed, speculative, free, and purgeable.
-- **Available memory** is computed as `free + speculative + purgeable + inactive`. This represents everything the OS can reclaim on demand — not just pages that are currently unused, but also caches and inactive pages that will be freed if an app needs them.
+- **Available memory** is computed as `total - used`, where used is `total - free - speculative - purgeable`. This avoids double-counting purgeable and inactive pages, which can otherwise inflate the number beyond physical RAM.
 - Swap usage comes from `sysctl vm.swapusage`.
 - Memory pressure is derived from `/usr/bin/memory_pressure` by parsing the reported system-wide free percentage.
 
