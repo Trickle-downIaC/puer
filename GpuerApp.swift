@@ -113,20 +113,21 @@ func readMemoryStats() -> MemoryStats {
     let inactive = UInt64(vm.inactive_count) * pageSize
     let wired = UInt64(vm.wire_count) * pageSize
     let compressed = UInt64(vm.compressor_page_count) * pageSize
-    let speculative = UInt64(vm.speculative_count) * pageSize
-    let free = UInt64(vm.free_count) * pageSize
+    let _ = UInt64(vm.speculative_count) * pageSize
+    let _ = UInt64(vm.free_count) * pageSize
     let purgeable = UInt64(vm.purgeable_count) * pageSize
 
-    // Approximate used memory = total - free - speculative - purgeable
-    let usedApprox = total - free - speculative - purgeable
-    let appMem = active + inactive - purgeable
+    // Used memory matching Activity Monitor: app memory + wired + compressed
+    // Inactive, speculative, purgeable, and free pages are all reclaimable
+    let appMem = active - purgeable
+    let usedApprox = appMem + wired + compressed
     let swap = getSwapUsage()
     let pressure = getMemoryPressure()
 
     return MemoryStats(
         totalBytes: total, usedBytes: usedApprox, activeBytes: active,
         inactiveBytes: inactive, wiredBytes: wired, compressedBytes: compressed,
-        freeBytes: free + speculative + purgeable, appBytes: appMem,
+        freeBytes: total - usedApprox, appBytes: appMem,
         swapUsedBytes: swap, pressure: pressure
     )
 }
