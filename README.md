@@ -1,14 +1,11 @@
-# Gpuer + Cpuer
+# Puer
 
 SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory. It lives in the Dock and keeps collecting data while its window is closed; click the Dock icon to reopen the window.
 
 > [!NOTE]
 > This app was vibe coded using Claude Opus 4.6 / 4.8 and GPT-5.4. I do not have deep knowledge of macOS internals or SwiftUI such that I can confidently evaluate the end result.
 
-> [!WARNING]
-> The screenshot below shows the earlier menu-bar, memory-only layout and is out of date. The app is now a three-column window (Memory / CPU / Processes).
-
-![Screenshot of the Gpuer app on macOS showing memory usage for an Apple M5 Max with 40 GPU cores. Left panel: a large orange "38 GB Available" readout showing usage of 128.0 GB unified memory, "Room for ~18 more large apps before pressure", a warning banner reading "1.5 GB pushed to disk — system was under pressure recently", a horizontal segmented bar chart labeled "Where your memory is going" with green, blue, and grey segments and a legend, an explanatory note about GPU unified memory, a GPU Utilization section showing 0%, and a History graph showing Available and GPU Utilization over time as line charts. Right panel: a Memory Footprint list sorted by Memory, showing process names with horizontal pink/purple usage bars and CPU percentage labels beside each entry, covering processes including Dropbox, WebKit, Virtualization, node, Claude Helper, Safari, LM Studio, WindowServer, Finder, and others.](https://github.com/simonw/gpuer/raw/main/screenshot.png)
+![Screenshot of the Puer app on macOS, a three-column window monitoring an Apple M1 Max (8P/2E CPU, 24 GPU cores, 64 GB). Left column: a large orange "18 GB Available" readout of 64.0 GB unified memory with "Room for ~9 more large apps before pressure", a swap warning banner, a segmented "Where your memory is going" bar (GPU active / GPU mapped / apps & OS / available) with a legend and unified-memory explanation, a GPU Utilization section, and an Available / GPU Utilization history graph. Middle column: CPU utilization headline (20%) with separate performance-core and efficiency-core load bars, a per-core load bar chart for all ten logical cores colored by efficiency vs performance, a CPU history sparkline, and a "Top CPU (last 5s)" list. Right column: a Memory Footprint list sorted by memory, each process showing a footprint bar and recent CPU percentage.](https://github.com/svshevtsov/puer/raw/main/screenshot.png)
 
 ## Features
 
