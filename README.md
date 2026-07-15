@@ -68,9 +68,31 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 
 ## Building
 
+The app is an Xcode project that builds a real `Puer.app`:
+
 ```bash
-git clone https://github.com/simonw/gpuer
+git clone https://github.com/svshevtsov/gpuer
 cd gpuer
+open Puer.xcodeproj   # then hit Run in Xcode
+```
+
+Or from the command line:
+
+```bash
+xcodebuild -project Puer.xcodeproj -scheme Puer -configuration Debug build
+```
+
+`Puer.xcodeproj` is committed and needs no extra tooling to open. It's generated from `project.yml` via [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen && xcodegen generate`), which you only need if you want to regenerate the project.
+
+**Setting an app icon:** in Xcode, open `Assets.xcassets` → `AppIcon` and drop your images into the slots (or provide a single 1024×1024 PNG and let Xcode generate the sizes).
+
+The app deliberately runs **without App Sandbox** because it shells out to `ioreg`, `ps`, and `memory_pressure`.
+
+### Quick build without Xcode
+
+For a throwaway run (bare binary, no `.app` bundle, no icon):
+
+```bash
 swiftc -parse-as-library -framework SwiftUI -framework AppKit -framework IOKit -o Gpuer GpuerApp.swift
 ./Gpuer
 ```

@@ -4,16 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Cpuer (repo/binary still named `gpuer`/`Gpuer`) is a macOS windowed app that monitors Apple Silicon CPU, GPU, and unified memory. It lives in the Dock and keeps collecting data even while its window is closed. The entire app is a single Swift file, `GpuerApp.swift` — there is no Xcode project, package manifest, or test suite.
+Puer (repo still named `gpuer`; the source file is still `GpuerApp.swift` with `@main struct GpuerApp`) is a macOS windowed app that monitors Apple Silicon CPU, GPU, and unified memory. It lives in the Dock and keeps collecting data even while its window is closed. All app code is a single Swift file, `GpuerApp.swift` — there is no test suite.
 
 ## Build & run
 
+Primary build is the Xcode project (this is what produces a real `Puer.app` and carries the app icon):
+
 ```bash
-swiftc -parse-as-library -framework SwiftUI -framework AppKit -framework IOKit -o Gpuer GpuerApp.swift
-./Gpuer
+# Regenerate the project from project.yml after changing structure (needs `brew install xcodegen`):
+xcodegen generate
+# Build/run: open Puer.xcodeproj in Xcode and hit Run, or from the CLI:
+xcodebuild -project Puer.xcodeproj -scheme Puer -configuration Debug build
 ```
 
-`-parse-as-library` is required because the entry point is `@main struct GpuerApp` rather than top-level code. Requires macOS + Xcode command line tools. There is no lint, test, or CI configuration.
+`Puer.xcodeproj` is committed, so opening it needs no tooling; XcodeGen + `project.yml` is only needed to regenerate it. The app target has **no App Sandbox** on purpose — it shells out to `/usr/sbin/ioreg`, `/bin/ps`, and `/usr/bin/memory_pressure`, which the sandbox would block; do not add a sandbox entitlement.
+
+**App icon:** open `Assets.xcassets` → `AppIcon` in Xcode and drop images into the slots (or supply a single 1024² and let Xcode resize).
+
+Quick alternative for a throwaway binary (no bundle, no icon):
+
+```bash
+swiftc -parse-as-library -framework SwiftUI -framework AppKit -framework IOKit -o Gpuer GpuerApp.swift && ./Gpuer
+```
+
+`-parse-as-library` is required there because the entry point is `@main` rather than top-level code. There is no lint or CI configuration.
 
 ## Architecture
 

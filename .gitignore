@@ -1,2 +1,13 @@
-# Compiled binary
+# Compiled binary from the plain `swiftc` build
 Gpuer
+Puer
+
+# Xcode build output
+.build_xcode/
+DerivedData/
+build/
+
+# Xcode user-specific state (the shared scheme in xcshareddata IS committed)
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad

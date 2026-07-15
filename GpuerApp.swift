@@ -839,7 +839,7 @@ struct ContentView: View {
                     // beside them (rather than being pushed below them, which wasted space).
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Cpuer")
+                            Text("Puer")
                                 .font(.system(size: 20, weight: .bold))
                             Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
                                 .font(.system(size: 11))
@@ -1170,7 +1170,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        window.title = "Cpuer"
+        window.title = "Puer"
         // Seamless titlebar: transparent, no title text, content flows underneath.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -1205,7 +1205,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - App Entry Point
 
 @main
-struct GpuerApp: App {
+struct PuerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
