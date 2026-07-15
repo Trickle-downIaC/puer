@@ -9,18 +9,21 @@
 /* Begin PBXBuildFile section */
 		0854C6D843D9C9291005B44E /* GpuerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36F379D642539530C4766546 /* GpuerApp.swift */; };
 		98A7D7704201662063A28AC3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CA81C35F20FFFE336EA6B9CB /* Assets.xcassets */; };
+		E9F8E77D3008296D004680B1 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = E9F8E77C3008296D004680B1 /* AppIcon.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		2B5F8843986EC053F290BD24 /* Puer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Puer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		36F379D642539530C4766546 /* GpuerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GpuerApp.swift; sourceTree = "<group>"; };
 		CA81C35F20FFFE336EA6B9CB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E9F8E77C3008296D004680B1 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		7D4694AC0E17F8D15BDE1ADC = {
 			isa = PBXGroup;
 			children = (
+				E9F8E77C3008296D004680B1 /* AppIcon.icon */,
 				CA81C35F20FFFE336EA6B9CB /* Assets.xcassets */,
 				36F379D642539530C4766546 /* GpuerApp.swift */,
 				B4DBB98A810654AF7ED15CC9 /* Products */,
@@ -95,6 +98,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				98A7D7704201662063A28AC3 /* Assets.xcassets in Resources */,
+				E9F8E77D3008296D004680B1 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
