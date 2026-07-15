@@ -34,12 +34,38 @@ struct GPUStats {
     let model: String
 }
 
+struct CPUStats {
+    let overall: Double            // 0-1, average across all cores
+    let performance: Double        // 0-1, average across performance cores
+    let efficiency: Double         // 0-1, average across efficiency cores
+    let perCore: [Double]          // 0-1 per core, efficiency cores first
+    let performanceCoreCount: Int
+    let efficiencyCoreCount: Int
+}
+
+// One core's cumulative CPU tick counters (from PROCESSOR_CPU_LOAD_INFO).
+struct CPUCoreTicks {
+    let user: UInt32
+    let system: UInt32
+    let idle: UInt32
+    let nice: UInt32
+}
+
 struct ProcessMemory: Identifiable {
     let id: String
     let name: String
     let pid: Int
     let residentMB: Double
-    let cpuPercent: Double
+    let cpuPercent: Double  // CPU% over the last sampling window (see readTopProcesses)
+}
+
+// Per-process sample before aggregation and recent-CPU computation.
+struct RawProc {
+    let name: String
+    let pid: Int
+    let footprintMB: Double
+    let cpuTimeNs: UInt64  // cumulative user+system CPU time, nanoseconds
+    let psCPU: Double      // ps lifetime %CPU, used as a fallback
 }
 
 enum ProcessSortKey: String, CaseIterable {
@@ -206,21 +232,109 @@ func readGPUStats() -> GPUStats {
                     coreCount: coreCount, model: model)
 }
 
+// MARK: - CPU Stats via host_processor_info
+
+// Number of performance vs efficiency logical cores on Apple Silicon.
+// perflevel0 = Performance, perflevel1 = Efficiency (verified via sysctl hw.perflevelN.name).
+func perfLevelCoreCounts() -> (performance: Int, efficiency: Int) {
+    func sysctlInt(_ name: String) -> Int {
+        var v: Int = 0
+        var sz = MemoryLayout<Int>.size
+        return sysctlbyname(name, &v, &sz, nil, 0) == 0 ? v : 0
+    }
+    return (sysctlInt("hw.perflevel0.logicalcpu"), sysctlInt("hw.perflevel1.logicalcpu"))
+}
+
+// Reads cumulative per-core tick counters. Usage is derived by diffing two reads.
+func readPerCoreTicks() -> [CPUCoreTicks] {
+    var info: processor_info_array_t?
+    var infoCount: mach_msg_type_number_t = 0
+    var numCPUs: natural_t = 0
+    let err = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &numCPUs, &info, &infoCount)
+    guard err == KERN_SUCCESS, let info = info else { return [] }
+    defer {
+        vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info),
+                      vm_size_t(infoCount) * vm_size_t(MemoryLayout<integer_t>.size))
+    }
+    var result: [CPUCoreTicks] = []
+    result.reserveCapacity(Int(numCPUs))
+    for c in 0..<Int(numCPUs) {
+        let base = c * Int(CPU_STATE_MAX)
+        result.append(CPUCoreTicks(
+            user: UInt32(bitPattern: info[base + Int(CPU_STATE_USER)]),
+            system: UInt32(bitPattern: info[base + Int(CPU_STATE_SYSTEM)]),
+            idle: UInt32(bitPattern: info[base + Int(CPU_STATE_IDLE)]),
+            nice: UInt32(bitPattern: info[base + Int(CPU_STATE_NICE)])
+        ))
+    }
+    return result
+}
+
+// Busy fraction (0-1) of a single core between two tick samples.
+func coreBusyFraction(_ prev: CPUCoreTicks, _ curr: CPUCoreTicks) -> Double {
+    let user = Double(curr.user &- prev.user)
+    let system = Double(curr.system &- prev.system)
+    let nice = Double(curr.nice &- prev.nice)
+    let idle = Double(curr.idle &- prev.idle)
+    let total = user + system + nice + idle
+    guard total > 0 else { return 0 }
+    return (user + system + nice) / total
+}
+
+// Empirically, host_processor_info enumerates efficiency cores first (low indices),
+// then performance cores. Confirmed on 8P+2E hardware: under an 8-thread load the 8
+// high-index cores saturate while indices 0-1 (the E-cores) stay partial.
+func computeCPUStats(prev: [CPUCoreTicks], curr: [CPUCoreTicks]) -> CPUStats {
+    let (pCount, eCount) = perfLevelCoreCounts()
+    guard !curr.isEmpty, prev.count == curr.count else {
+        return CPUStats(overall: 0, performance: 0, efficiency: 0, perCore: [],
+                        performanceCoreCount: pCount, efficiencyCoreCount: eCount)
+    }
+    let perCore = (0..<curr.count).map { coreBusyFraction(prev[$0], curr[$0]) }
+    func avg(_ slice: ArraySlice<Double>) -> Double {
+        slice.isEmpty ? 0 : slice.reduce(0, +) / Double(slice.count)
+    }
+    let eSlice = perCore.prefix(min(eCount, perCore.count))
+    let pSlice = perCore.suffix(from: min(eCount, perCore.count))
+    return CPUStats(
+        overall: avg(perCore[...]),
+        performance: avg(pSlice[...]),
+        efficiency: avg(eSlice),
+        perCore: perCore,
+        performanceCoreCount: pCount,
+        efficiencyCoreCount: eCount
+    )
+}
+
 // MARK: - Physical Footprint (accurate memory, same metric as Activity Monitor)
 
-func getPhysFootprint(_ pid: Int32) -> UInt64 {
+// ri_user_time / ri_system_time are reported in mach absolute time units, NOT nanoseconds.
+// On Apple Silicon the timebase is ~125/3, so treating them as ns underreports CPU by ~42x.
+let machTimebase: (numer: UInt64, denom: UInt64) = {
+    var tb = mach_timebase_info_data_t()
+    mach_timebase_info(&tb)
+    return (UInt64(tb.numer), UInt64(tb.denom))
+}()
+
+// Returns physical footprint (bytes) and cumulative CPU time (user+system, ns) for a pid.
+func getProcUsage(_ pid: Int32) -> (footprint: UInt64, cpuTimeNs: UInt64)? {
     var info = rusage_info_v4()
     let result = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
         ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reboundPtr in
             proc_pid_rusage(pid, Int32(RUSAGE_INFO_V4), reboundPtr)
         }
     }
-    return result == 0 ? info.ri_phys_footprint : 0
+    guard result == 0 else { return nil }
+    let cpuTicks = info.ri_user_time &+ info.ri_system_time
+    let cpuTimeNs = cpuTicks / machTimebase.denom &* machTimebase.numer
+    return (info.ri_phys_footprint, cpuTimeNs)
 }
 
-// MARK: - Top Processes by Memory
+// MARK: - Process Sampling
 
-func readTopProcesses(limit: Int = 30) -> [ProcessMemory] {
+// One raw per-pid sample. Recent CPU% and name-aggregation happen in SystemMonitor,
+// which owns the previous sample needed to diff cumulative CPU time.
+func sampleProcesses() -> [RawProc] {
     let pipe = Pipe()
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -232,7 +346,7 @@ func readTopProcesses(limit: Int = 30) -> [ProcessMemory] {
     proc.waitUntilExit()
     guard let output = String(data: data, encoding: .utf8) else { return [] }
 
-    var results: [ProcessMemory] = []
+    var results: [RawProc] = []
     let lines = output.split(separator: "\n").dropFirst() // skip header
 
     for line in lines.prefix(200) {
@@ -240,37 +354,19 @@ func readTopProcesses(limit: Int = 30) -> [ProcessMemory] {
         guard cols.count >= 4 else { continue }
         guard let pid = Int(cols[0]) else { continue }
         guard let rssKB = Double(cols[1]) else { continue }
-        guard let cpu = Double(cols[2]) else { continue }
+        guard let psCPU = Double(cols[2]) else { continue }
         var name = String(cols[3])
         if let lastSlash = name.lastIndex(of: "/") {
             name = String(name[name.index(after: lastSlash)...])
         }
-        // Use physical footprint (accurate) instead of RSS (inflated by shared pages)
-        let footprint = getPhysFootprint(Int32(pid))
-        let mb = footprint > 0 ? Double(footprint) / 1_048_576.0 : rssKB / 1024.0
+        // Physical footprint (accurate) instead of RSS (inflated by shared pages).
+        let usage = getProcUsage(Int32(pid))
+        let mb = (usage?.footprint ?? 0) > 0 ? Double(usage!.footprint) / 1_048_576.0 : rssKB / 1024.0
         if mb < 1 { continue }
-        results.append(ProcessMemory(id: "\(name).\(pid)", name: name, pid: pid, residentMB: mb, cpuPercent: cpu))
+        results.append(RawProc(name: name, pid: pid, footprintMB: mb,
+                               cpuTimeNs: usage?.cpuTimeNs ?? 0, psCPU: psCPU))
     }
-
-    // Aggregate by process name
-    var aggregated: [String: (totalMB: Double, totalCPU: Double, pids: [Int], count: Int)] = [:]
-    for p in results {
-        var entry = aggregated[p.name] ?? (totalMB: 0, totalCPU: 0, pids: [], count: 0)
-        entry.totalMB += p.residentMB
-        entry.totalCPU += p.cpuPercent
-        entry.pids.append(p.pid)
-        entry.count += 1
-        aggregated[p.name] = entry
-    }
-
-    return aggregated.map { name, data in
-        let displayName = data.count > 1 ? "\(name) (\(data.count))" : name
-        return ProcessMemory(id: name, name: displayName, pid: data.pids.first ?? 0,
-                      residentMB: data.totalMB, cpuPercent: data.totalCPU)
-    }
-    .sorted { $0.residentMB > $1.residentMB }
-    .prefix(limit)
-    .map { $0 }
+    return results
 }
 
 // MARK: - Monitor
@@ -278,18 +374,31 @@ func readTopProcesses(limit: Int = 30) -> [ProcessMemory] {
 class SystemMonitor: ObservableObject {
     @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, freeBytes: 0, appBytes: 0, swapUsedBytes: 0, pressure: 0)
     @Published var gpuStats = GPUStats(deviceUtilization: 0, rendererUtilization: 0, tilerUtilization: 0, inUseMemory: 0, allocatedMemory: 0, coreCount: 0, model: "")
+    @Published var cpuStats = CPUStats(overall: 0, performance: 0, efficiency: 0, perCore: [], performanceCoreCount: 0, efficiencyCoreCount: 0)
     @Published var processes: [ProcessMemory] = []
     @Published var processSortKey: ProcessSortKey = .memory
     @Published var processSortAscending: Bool = false
     @Published var memoryHistory: [Double] = []  // used fraction
     @Published var gpuHistory: [Int] = []  // device utilization %
     @Published var gpuMemHistory: [Double] = []  // in-use GPU memory fraction
+    @Published var cpuHistory: [Double] = []  // overall CPU busy fraction
+
+    // Window (seconds) over which per-process recent CPU% is measured; matches the slow timer.
+    let processWindowSeconds = 5
 
     private var fastTimer: Timer?
     private var slowTimer: Timer?
     private let maxHistory = 60
 
+    // Previous samples needed to turn cumulative counters into rates.
+    private var prevCPUTicks: [CPUCoreTicks] = []
+    private var prevProcCPUTime: [Int: UInt64] = [:]  // pid -> cumulative CPU ns
+    private var prevProcSampleTime: Double = 0        // systemUptime seconds
+
     init() {
+        // Seed cumulative-counter baselines so the first samples produce sane rates.
+        prevCPUTicks = readPerCoreTicks()
+        prevProcSampleTime = ProcessInfo.processInfo.systemUptime
         refresh()
         refreshProcesses()
         // Memory + GPU stats every 2s
@@ -309,12 +418,16 @@ class SystemMonitor: ObservableObject {
 
     func refresh() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
             let mem = readMemoryStats()
             let gpu = readGPUStats()
+            let currTicks = readPerCoreTicks()
+            let cpu = computeCPUStats(prev: self.prevCPUTicks, curr: currTicks)
+            if !currTicks.isEmpty { self.prevCPUTicks = currTicks }
             DispatchQueue.main.async {
-                guard let self = self else { return }
                 self.memoryStats = mem
                 self.gpuStats = gpu
+                self.cpuStats = cpu
 
                 self.memoryHistory.append(mem.usedFraction)
                 if self.memoryHistory.count > self.maxHistory { self.memoryHistory.removeFirst() }
@@ -326,16 +439,55 @@ class SystemMonitor: ObservableObject {
                 let gpuMemFrac = totalMem > 0 ? Double(gpu.inUseMemory) / Double(totalMem) : 0
                 self.gpuMemHistory.append(gpuMemFrac)
                 if self.gpuMemHistory.count > self.maxHistory { self.gpuMemHistory.removeFirst() }
+
+                self.cpuHistory.append(cpu.overall)
+                if self.cpuHistory.count > self.maxHistory { self.cpuHistory.removeFirst() }
             }
         }
     }
 
     func refreshProcesses() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let procs = readTopProcesses()
+            guard let self = self else { return }
+            let raw = sampleProcesses()
+            let now = ProcessInfo.processInfo.systemUptime
+            let dt = now - self.prevProcSampleTime
+            let prev = self.prevProcCPUTime
+
+            // Recent CPU% per pid from the cumulative CPU-time delta over the window.
+            var newPrev: [Int: UInt64] = [:]
+            newPrev.reserveCapacity(raw.count)
+            var recentCPU: [Int: Double] = [:]
+            for p in raw {
+                newPrev[p.pid] = p.cpuTimeNs
+                if dt > 0, let prevNs = prev[p.pid], p.cpuTimeNs >= prevNs {
+                    recentCPU[p.pid] = Double(p.cpuTimeNs - prevNs) / 1_000_000_000.0 / dt * 100.0
+                } else {
+                    recentCPU[p.pid] = p.psCPU  // first sample, new pid, or counter reset
+                }
+            }
+            self.prevProcCPUTime = newPrev
+            self.prevProcSampleTime = now
+
+            // Aggregate by executable name, summing footprint and recent CPU.
+            struct Agg { var mb = 0.0; var cpu = 0.0; var pids: [Int] = []; var count = 0 }
+            var agg: [String: Agg] = [:]
+            for p in raw {
+                var e = agg[p.name] ?? Agg()
+                e.mb += p.footprintMB
+                e.cpu += recentCPU[p.pid] ?? 0
+                e.pids.append(p.pid)
+                e.count += 1
+                agg[p.name] = e
+            }
+            let aggregated = agg.map { name, d -> ProcessMemory in
+                let display = d.count > 1 ? "\(name) (\(d.count))" : name
+                return ProcessMemory(id: name, name: display, pid: d.pids.first ?? 0,
+                                     residentMB: d.mb, cpuPercent: d.cpu)
+            }
+
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                self.processes = self.sortProcesses(procs)
+                self.processes = self.sortProcesses(aggregated)
             }
         }
     }
@@ -579,8 +731,90 @@ struct ProcessRowView: View {
     }
 }
 
+// Aggregate load bar for a core cluster (performance or efficiency).
+struct CoreLoadRow: View {
+    let label: String
+    let usage: Double  // 0-1
+    let count: Int
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("\(label) \u{00B7} \(count) core\(count == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(Int((usage * 100).rounded()))%")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(color)
+            }
+            UsageBarView(segments: [(usage, color)], height: 8)
+        }
+    }
+}
+
+// Vertical mini-bars, one per logical core; efficiency cores (first N) colored teal.
+struct PerCoreBarsView: View {
+    let perCore: [Double]
+    let efficiencyCount: Int
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 3) {
+            ForEach(Array(perCore.enumerated()), id: \.offset) { idx, usage in
+                let isEfficiency = idx < efficiencyCount
+                VStack(spacing: 2) {
+                    ZStack(alignment: .bottom) {
+                        RoundedRectangle(cornerRadius: 2).fill(Color.primary.opacity(0.06))
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(isEfficiency ? Color.teal : Color.blue)
+                            .frame(height: max(2, 50 * CGFloat(min(usage, 1))))
+                    }
+                    .frame(height: 50)
+                    Text("\(Int((usage * 100).rounded()))")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+// Compact row for the "Top CPU" list: name + recent CPU% + proportional bar.
+struct CPURowView: View {
+    let proc: ProcessMemory
+    let maxCPU: Double
+
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack {
+                Text(proc.name)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                Spacer()
+                Text(String(format: "%.0f%%", proc.cpuPercent))
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2).fill(Color.blue.opacity(0.1))
+                    RoundedRectangle(cornerRadius: 2).fill(Color.blue.opacity(0.55))
+                        .frame(width: max(0, geo.size.width * CGFloat(proc.cpuPercent / max(maxCPU, 1))))
+                }
+            }
+            .frame(height: 4)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// Fixed three-column layout: memory (500) + CPU (360) + processes (320) + 2 dividers.
+let windowWidth: CGFloat = 1182
+let windowHeight: CGFloat = 720
+
 struct ContentView: View {
-    @StateObject private var monitor = SystemMonitor()
+    @ObservedObject var monitor: SystemMonitor
 
     private var availableGB: Double {
         Double(monitor.memoryStats.availableBytes) / 1_073_741_824
@@ -603,9 +837,9 @@ struct ContentView: View {
                     // Header
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Gpuer")
+                            Text("Cpuer")
                                 .font(.system(size: 20, weight: .bold))
-                            Text("\(monitor.gpuStats.model) \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
+                            Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
                         }
@@ -767,7 +1001,91 @@ struct ContentView: View {
                 }
                 .padding(16)
             }
-            .frame(width: 520)
+            .frame(width: 500)
+
+            Divider()
+
+            // MIDDLE COLUMN: CPU
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    SectionHeader(title: "CPU", icon: "cpu")
+
+                    RateCardView(
+                        title: "CPU UTILIZATION",
+                        value: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
+                        subtitle: "P-cores \(Int((monitor.cpuStats.performance * 100).rounded()))% \u{2022} E-cores \(Int((monitor.cpuStats.efficiency * 100).rounded()))%",
+                        icon: "cpu",
+                        color: .blue
+                    )
+
+                    // Cluster loads
+                    VStack(alignment: .leading, spacing: 10) {
+                        CoreLoadRow(label: "Performance", usage: monitor.cpuStats.performance,
+                                    count: monitor.cpuStats.performanceCoreCount, color: .blue)
+                        CoreLoadRow(label: "Efficiency", usage: monitor.cpuStats.efficiency,
+                                    count: monitor.cpuStats.efficiencyCoreCount, color: .teal)
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // Per-core bars
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Per-core load")
+                            .font(.system(size: 12, weight: .semibold))
+                        PerCoreBarsView(perCore: monitor.cpuStats.perCore,
+                                        efficiencyCount: monitor.cpuStats.efficiencyCoreCount)
+                        HStack(spacing: 14) {
+                            HStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 2).fill(.teal).frame(width: 10, height: 10)
+                                Text("Efficiency").font(.system(size: 10))
+                            }
+                            HStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 2).fill(.blue).frame(width: 10, height: 10)
+                                Text("Performance").font(.system(size: 10))
+                            }
+                        }
+                        .foregroundColor(.secondary)
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // CPU history
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("History (2 min)")
+                            .font(.system(size: 12, weight: .semibold))
+                        SparklineView(data: monitor.cpuHistory.map { $0 * 100 }, color: .blue, maxValue: 100.0)
+                            .frame(height: 44)
+                    }
+                    .padding(10)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // Top CPU consumers over the recent window
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Top CPU (last \(monitor.processWindowSeconds)s)")
+                            .font(.system(size: 12, weight: .semibold))
+                        let cpuProcs = Array(monitor.processes
+                            .sorted { $0.cpuPercent > $1.cpuPercent }
+                            .prefix(10))
+                        let maxCPU = cpuProcs.map(\.cpuPercent).max() ?? 1.0
+                        if cpuProcs.isEmpty {
+                            Text("Loading\u{2026}").font(.system(size: 11)).foregroundColor(.secondary)
+                        } else {
+                            ForEach(cpuProcs) { proc in
+                                CPURowView(proc: proc, maxCPU: maxCPU)
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+                }
+                .padding(16)
+            }
+            .frame(width: 360)
 
             Divider()
 
@@ -825,44 +1143,48 @@ struct ContentView: View {
             .padding(12)
             .frame(width: 320)
         }
-        .frame(width: 840, height: 700)
+        .frame(width: windowWidth, height: windowHeight)
         .background(.background)
     }
 }
 
-// MARK: - App Delegate for Menu Bar
+// MARK: - App Delegate (windowed, lives in the Dock)
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    var statusItem: NSStatusItem!
-    var popover: NSPopover!
+    // Owned here (not by the SwiftUI view) so monitoring keeps running while the
+    // window is closed. The app stays in the Dock and keeps collecting data.
+    let monitor = SystemMonitor()
+    var window: NSWindow!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        NSApp.setActivationPolicy(.regular)  // Dock icon + standard app menu, not a menu-bar extra
 
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "Gpuer")
-            button.action = #selector(togglePopover)
-            button.target = self
-        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        window.title = "Cpuer"
+        window.contentViewController = NSHostingController(rootView: ContentView(monitor: monitor))
+        window.center()
+        window.isReleasedWhenClosed = false  // closing just hides it; we reopen the same window
+        self.window = window
 
-        let popover = NSPopover()
-        popover.contentSize = NSSize(width: 840, height: 700)
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: ContentView())
-        self.popover = popover
-
-        NSApp.setActivationPolicy(.accessory)
+        showWindow()
     }
 
-    @objc func togglePopover() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
-        } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
-            popover.contentViewController?.view.window?.makeKey()
-        }
+    func showWindow() {
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // Keep the app (and the monitor's timers) alive after the window is closed.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    // Clicking the Dock icon with no visible window reopens it.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showWindow() }
+        return true
     }
 }
 

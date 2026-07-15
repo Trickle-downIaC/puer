@@ -1,9 +1,12 @@
-# Gpuer
+# Gpuer + Cpuer
 
-SwiftUI menu bar app for monitoring macOS GPU and memory stats.
+SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory. It lives in the Dock and keeps collecting data while its window is closed; click the Dock icon to reopen the window.
 
 > [!NOTE]
-> This app was vibe coded using Claude Opus 4.6 and GPT-5.4. I do not have deep knowledge of macOS internals or SwiftUI such that I can confidently evaluate the end result.
+> This app was vibe coded using Claude Opus 4.6 / 4.8 and GPT-5.4. I do not have deep knowledge of macOS internals or SwiftUI such that I can confidently evaluate the end result.
+
+> [!WARNING]
+> The screenshot below shows the earlier menu-bar, memory-only layout and is out of date. The app is now a three-column window (Memory / CPU / Processes).
 
 ![Screenshot of the Gpuer app on macOS showing memory usage for an Apple M5 Max with 40 GPU cores. Left panel: a large orange "38 GB Available" readout showing usage of 128.0 GB unified memory, "Room for ~18 more large apps before pressure", a warning banner reading "1.5 GB pushed to disk — system was under pressure recently", a horizontal segmented bar chart labeled "Where your memory is going" with green, blue, and grey segments and a legend, an explanatory note about GPU unified memory, a GPU Utilization section showing 0%, and a History graph showing Available and GPU Utilization over time as line charts. Right panel: a Memory Footprint list sorted by Memory, showing process names with horizontal pink/purple usage bars and CPU percentage labels beside each entry, covering processes including Dropbox, WebKit, Virtualization, node, Claude Helper, Safari, LM Studio, WindowServer, Finder, and others.](https://github.com/simonw/gpuer/raw/main/screenshot.png)
 
@@ -12,10 +15,13 @@ SwiftUI menu bar app for monitoring macOS GPU and memory stats.
 - **"Available" headline** showing how much unified memory you can still use, with a plain-English estimate of headroom
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool — no more pretending GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
+- **CPU load split by core type** — overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
+- **Top CPU consumers over the last ~5s** — a recent-window CPU ranking (computed from per-process CPU-time deltas), not the lifetime average `ps` reports
 - **Physical footprint** for per-process memory (the same metric Activity Monitor uses) instead of RSS, which inflates numbers by counting shared pages multiple times
 - Swap usage with contextual explanation
-- Two-minute sparklines for available memory and GPU utilization
-- Two-column menu bar popover: stats on the left, process list on the right
+- Two-minute sparklines for available memory, GPU utilization, and CPU load
+- Three-column window: memory on the left, CPU in the middle, process footprints on the right
+- **Runs in the Dock**, not the menu bar — closing the window keeps the app alive and collecting; reopen from the Dock
 
 ## How measurement works
 
@@ -39,12 +45,18 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 - The gap between mapped and active is memory that's allocated (often wired/pinned) but idle — for example, model weights that aren't being processed this instant.
 - When GPU mapped memory is large, Gpuer explains why: this memory is your RAM shared with the GPU, not separate VRAM. This is typically the reason "wired" memory appears very high on machines running local inference.
 
-### Per-process memory
+### CPU
+
+- Per-core load comes from `host_processor_info(PROCESSOR_CPU_LOAD_INFO)`, which reports cumulative user/system/idle/nice ticks per logical core. Utilization is the busy fraction between two samples.
+- Cores are split into **performance** and **efficiency** clusters using `sysctl hw.perflevel0.logicalcpu` (performance) and `hw.perflevel1.logicalcpu` (efficiency). Empirically, `host_processor_info` enumerates the efficiency cores first (low indices) and the performance cores after, so the app maps indices accordingly.
+
+### Per-process memory and recent CPU
 
 - Process list comes from `ps -eo pid,rss,pcpu,comm -r`.
 - Each process's memory is measured using **physical footprint** via `proc_pid_rusage(RUSAGE_INFO_V4)` and the `ri_phys_footprint` field. This is the same metric Activity Monitor shows in its "Memory" column. It avoids the problem where RSS (Resident Set Size) double-counts shared libraries and memory-mapped files across processes.
+- **Recent CPU%** is computed from the same `proc_pid_rusage` call by diffing each process's cumulative CPU time (`ri_user_time + ri_system_time`) between samples, over the ~5s refresh window — so it reflects what's busy *now*, not the lifetime average `ps` reports. Note these fields are in mach time units, not nanoseconds, so they're converted via `mach_timebase_info`.
 - Processes are aggregated by executable name with a count shown (e.g. `node (10)`).
-- If `proc_pid_rusage` fails for a process (e.g. insufficient permissions for system processes), Gpuer falls back to RSS from `ps`.
+- If `proc_pid_rusage` fails for a process (e.g. insufficient permissions for system processes), Gpuer falls back to RSS from `ps` for memory and to the `ps` `%CPU` value for CPU.
 
 ### Important limitations
 
