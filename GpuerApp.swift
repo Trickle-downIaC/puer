@@ -830,7 +830,8 @@ struct ContentView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
+        // HSplitView gives each column a draggable divider so the user can resize sections.
+        HSplitView {
             // LEFT COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1001,9 +1002,7 @@ struct ContentView: View {
                 }
                 .padding(16)
             }
-            .frame(width: 500)
-
-            Divider()
+            .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
 
             // MIDDLE COLUMN: CPU
             ScrollView {
@@ -1085,9 +1084,7 @@ struct ContentView: View {
                 }
                 .padding(16)
             }
-            .frame(width: 360)
-
-            Divider()
+            .frame(minWidth: 260, idealWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
 
             // RIGHT COLUMN: Process footprints
             VStack(alignment: .leading, spacing: 8) {
@@ -1141,9 +1138,11 @@ struct ContentView: View {
                 }
             }
             .padding(12)
-            .frame(width: 320)
+            .frame(minWidth: 220, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: windowWidth, height: windowHeight)
+        // Top inset keeps content clear of the traffic-light buttons under the seamless titlebar.
+        .padding(.top, 28)
+        .frame(minWidth: 820, idealWidth: windowWidth, minHeight: 480, idealHeight: windowHeight)
         .background(.background)
     }
 }
@@ -1161,10 +1160,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
         window.title = "Cpuer"
+        // Seamless titlebar: transparent, no title text, content flows underneath.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.contentMinSize = NSSize(width: 820, height: 480)
         window.contentViewController = NSHostingController(rootView: ContentView(monitor: monitor))
         window.center()
         window.isReleasedWhenClosed = false  // closing just hides it; we reopen the same window
