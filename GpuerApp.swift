@@ -835,7 +835,8 @@ struct ContentView: View {
             // LEFT COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // Header
+                    // Header — indented past the traffic lights so it sits on the top row
+                    // beside them (rather than being pushed below them, which wasted space).
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Cpuer")
@@ -843,9 +844,12 @@ struct ContentView: View {
                             Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)  // shrink rather than wrap when the column is narrow
                         }
                         Spacer()
                     }
+                    .padding(.leading, 60)
 
                     // HEADLINE: Available memory
                     VStack(alignment: .leading, spacing: 6) {
@@ -1000,7 +1004,8 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
                 }
-                .padding(16)
+                .padding([.horizontal, .bottom], 16)
+                .padding(.top, 12)
             }
             .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
 
@@ -1082,7 +1087,8 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
                 }
-                .padding(16)
+                .padding([.horizontal, .bottom], 16)
+                .padding(.top, 12)
             }
             .frame(minWidth: 260, idealWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
 
@@ -1137,11 +1143,12 @@ struct ContentView: View {
                     }
                 }
             }
-            .padding(12)
+            .padding([.horizontal, .bottom], 12)
+            .padding(.top, 12)
             .frame(minWidth: 220, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
-        // Top inset keeps content clear of the traffic-light buttons under the seamless titlebar.
-        .padding(.top, 28)
+        // No global top inset: each column sets its own, so only the left column (under the
+        // traffic lights) pays for clearance while CPU/Processes sit near the top edge.
         .frame(minWidth: 820, idealWidth: windowWidth, minHeight: 480, idealHeight: windowHeight)
         .background(.background)
     }
@@ -1170,6 +1177,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.contentMinSize = NSSize(width: 820, height: 480)
         window.contentViewController = NSHostingController(rootView: ContentView(monitor: monitor))
+        // Assigning a hosting controller shrinks the window to the layout's fitting size;
+        // force it back to the intended size so columns open at their ideal widths.
+        window.setContentSize(NSSize(width: windowWidth, height: windowHeight))
         window.center()
         window.isReleasedWhenClosed = false  // closing just hides it; we reopen the same window
         self.window = window
