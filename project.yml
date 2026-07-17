@@ -1,0 +1,44 @@
+# XcodeGen spec — regenerate the project with:  xcodegen generate
+# The generated Puer.xcodeproj is committed too, so you can just open it without XcodeGen.
+name: Puer
+options:
+  bundleIdPrefix: com.svshevtsov
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+targets:
+  Puer:
+    type: application
+    platform: macOS
+    # Reuses the existing single Swift file at the repo root as the app source.
+    sources:
+      - path: GpuerApp.swift
+      - path: Assets.xcassets
+    settings:
+      base:
+        PRODUCT_NAME: Puer
+        PRODUCT_BUNDLE_IDENTIFIER: com.svshevtsov.Puer
+        GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        # No App Sandbox: the app shells out to /usr/sbin/ioreg, /bin/ps and
+        # /usr/bin/memory_pressure, which the sandbox would block. Do not add a
+        # sandbox entitlement.
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        COMBINE_HIDPI_IMAGES: YES
+schemes:
+  Puer:
+    build:
+      targets:
+        Puer: all
+    run:
+      config: Debug
+    archive:
+      config: Release
