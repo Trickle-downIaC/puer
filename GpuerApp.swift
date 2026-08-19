@@ -429,6 +429,7 @@ class SystemMonitor: ObservableObject {
 
     // Pressure/thermal/swap-rate state (feature: smarter pressure story)
     @Published var thermalState: ProcessInfo.ThermalState = .nominal
+    @Published var lowPowerMode: Bool = false
     @Published var swapInRateMBs: Double = 0
     @Published var swapOutRateMBs: Double = 0
     @Published var lastPressureEvent: Date? = nil
@@ -495,6 +496,7 @@ class SystemMonitor: ObservableObject {
             self.prevSwapOutsBytes = mem.swapOutsBytes
             self.prevSwapSampleTime = nowUp
             let thermal = ProcessInfo.processInfo.thermalState
+            let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
             // Pressure "event": kernel leaves normal, or sustained swap-out activity.
             let eventNow = mem.kernelPressureLevel > 1 || outRate > 5.0
             DispatchQueue.main.async {
@@ -502,6 +504,7 @@ class SystemMonitor: ObservableObject {
                 self.gpuStats = gpu
                 self.cpuStats = cpu
                 self.thermalState = thermal
+                self.lowPowerMode = lowPower
                 self.swapInRateMBs = inRate
                 self.swapOutRateMBs = outRate
                 if eventNow {
@@ -632,14 +635,16 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
     out += "used: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    let appCache = mem.activeBytes > mem.appBytes ? mem.activeBytes - mem.appBytes : 0
+    out += "active: \(gib(mem.activeBytes)) GiB (app \(gib(mem.appBytes)) + app cache \(gib(appCache)))\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
-    out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState))\n"
+    out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
     out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s; session swap out: \(gib(sessionSwapOut)) GiB\n"
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > mem.wiredBytes ? limitBytes - mem.wiredBytes : 0
-        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit (headroom \(gib(headroom)) GiB)\n"
+        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit (wired available \(gib(headroom)) GiB)\n"
     } else {
         out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
     }
@@ -1188,37 +1193,52 @@ struct ContentView: View {
     }
 
     var body: some View {
-        // HSplitView gives each column a draggable divider so the user can resize sections.
-        HSplitView {
+        VStack(spacing: 0) {
+            // TOP BAR: app-wide and device-wide info spanning all three columns.
+            // Leading padding clears the traffic lights; the gap doubles as icon space.
+            HStack(spacing: 12) {
+                Text("Puer")
+                    .font(.system(size: 18, weight: .bold))
+                Divider()
+                    .frame(height: 16)
+                Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Divider()
+                    .frame(height: 16)
+                StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
+                           color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
+                Divider()
+                    .frame(height: 16)
+                StatusPill(title: "Power", state: monitor.lowPowerMode ? "low power" : "normal",
+                           color: monitor.lowPowerMode ? .orange : .green)
+                Spacer(minLength: 8)
+                Button(action: {
+                    copyPerformanceReport(monitor: monitor)
+                    reportCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
+                }) {
+                    Label(reportCopied ? "Copied" : "Copy Report",
+                          systemImage: reportCopied ? "checkmark" : "doc.on.clipboard")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
+            }
+            .padding(.leading, 76)
+            .padding(.trailing, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            // HSplitView gives each column a draggable divider so the user can resize sections.
+            HSplitView {
             // LEFT COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // Header, indented past the traffic lights so it sits on the top row
-                    // beside them (rather than being pushed below them, which wasted space).
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Puer")
-                                .font(.system(size: 20, weight: .bold))
-                            Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)  // shrink rather than wrap when the column is narrow
-                        }
-                        .layoutPriority(1)
-                        Spacer(minLength: 8)
-                        Button(action: {
-                            copyPerformanceReport(monitor: monitor)
-                            reportCopied = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
-                        }) {
-                            Image(systemName: reportCopied ? "checkmark" : "doc.on.clipboard")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
-                    }
-                    .padding(.leading, 60)
+                    SectionHeader(title: "Memory", icon: "memorychip")
 
                     // HEADLINE: Available memory
                     VStack(alignment: .leading, spacing: 6) {
@@ -1279,16 +1299,6 @@ struct ContentView: View {
 
                     // Pressure story: ongoing / past-event-this-session / stale residue
                     PressureBannerView(monitor: monitor)
-
-                    // SYSTEM STATUS: thermal verdict
-                    HStack(spacing: 14) {
-                        StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
-                                   color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
-                        Spacer()
-                    }
-                    .padding(10)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
@@ -1561,9 +1571,9 @@ struct ContentView: View {
             .padding([.horizontal, .bottom], 12)
             .padding(.top, 12)
             .frame(minWidth: 220, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        // No global top inset: each column sets its own, so only the left column (under the
-        // traffic lights) pays for clearance while CPU/Processes sit near the top edge.
+        // Columns no longer need traffic-light clearance; the top bar carries it.
         .frame(minWidth: 820, idealWidth: windowWidth, minHeight: 480, idealHeight: windowHeight)
         .background(.background)
     }
