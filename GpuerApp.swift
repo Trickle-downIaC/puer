@@ -1101,20 +1101,6 @@ struct PressureBannerView: View {
             banner(color: .orange, icon: "exclamationmark.triangle.fill",
                    text: "Pressure \(minutesAgo(evt)) ago this session"
                         + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))"))
-        } else if monitor.memoryStats.swapUsedBytes > 0 {
-            HStack(spacing: 14) {
-                Image(systemName: "archivebox")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 11))
-                StatItem(label: "SWAP ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
-                StatItem(label: "SWAP ACTIVITY", value: String(format: "%.1f MB/s", monitor.swapInRateMBs + monitor.swapOutRateMBs), color: .secondary)
-                StatItem(label: "PRESSURE EVENTS", value: "0 since launch", color: .secondary)
-                Spacer()
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.secondary.opacity(0.08))
-            .cornerRadius(6)
         }
     }
 
@@ -1236,10 +1222,31 @@ struct ContentView: View {
                         Text("of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
-                        HStack(spacing: 16) {
-                            StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
-                            StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: .purple)
-                            StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                            GridRow {
+                                StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
+                                // Purgeable is derived: APP is defined as ACTIVE minus purgeable,
+                                // so the row reads as APP + PURGEABLE = ACTIVE left to right.
+                                StatItem(label: "APP CACHE", value: formatMemory(monitor.memoryStats.activeBytes > monitor.memoryStats.appBytes ? monitor.memoryStats.activeBytes - monitor.memoryStats.appBytes : 0), color: .secondary)
+                                StatItem(label: "ACTIVE", value: formatMemory(monitor.memoryStats.activeBytes), color: .secondary)
+                            }
+                            GridRow {
+                                StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: .purple)
+                                if monitor.wiredLimitMB > 0 {
+                                    let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
+                                    let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
+                                    StatItem(label: "AVAILABLE", value: formatMemory(wiredAvail), color: .secondary)
+                                    StatItem(label: "LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                                } else {
+                                    StatItem(label: "AVAILABLE", value: "n/a", color: .secondary)
+                                    StatItem(label: "LIMIT", value: "macOS default", color: .secondary)
+                                }
+                            }
+                            GridRow {
+                                StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                                StatItem(label: "SWAPPED", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
+                                StatItem(label: "SWAP ACTIVITY", value: String(format: "%.1f MB/s", monitor.swapInRateMBs + monitor.swapOutRateMBs), color: .secondary)
+                            }
                         }
                         .padding(.top, 2)
                     }
@@ -1250,6 +1257,20 @@ struct ContentView: View {
 
                     // Pressure story: ongoing / past-event-this-session / stale residue
                     PressureBannerView(monitor: monitor)
+
+                    // SYSTEM STATUS: kernel/thermal verdicts
+                    HStack(spacing: 14) {
+                        StatusPill(title: "Kernel", state: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
+                                   color: monitor.memoryStats.kernelPressureLevel > 2 ? .red : (monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .green))
+                        StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
+                                   color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
+                        Spacer()
+                        let lastPressure = monitor.lastPressureEvent.map { "\(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago" } ?? "none since launch"
+                        StatItem(label: "LAST PRESSURE", value: lastPressure, color: .secondary)
+                    }
+                    .padding(10)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
@@ -1325,20 +1346,6 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                                 .padding(.top, 2)
                         }
-                        // Kernel/thermal verdicts + wired vs the Metal wired limit
-                        HStack(spacing: 8) {
-                            StatusPill(title: "Kernel", state: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
-                                       color: monitor.memoryStats.kernelPressureLevel > 2 ? .red : (monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .green))
-                            StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
-                                       color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
-                            Spacer()
-                            Text(monitor.wiredLimitMB > 0
-                                 ? "Wired \(formatMemory(monitor.memoryStats.wiredBytes)) of \(String(format: "%.1f", Double(monitor.wiredLimitMB) / 1024)) GB limit"
-                                 : "Wired \(formatMemory(monitor.memoryStats.wiredBytes)) (limit: macOS default)")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.top, 4)
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
