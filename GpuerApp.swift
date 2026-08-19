@@ -701,8 +701,12 @@ struct SparklineView: View {
     let color: Color
     let maxValue: Double?
     let sampleInterval: Double                 // seconds between samples (time axis)
-    let showGrid: Bool                         // 0/25/50/75/100 gridlines + labels + time ticks
+    let showGrid: Bool                         // gridlines + gutter axis labels
     let yQuarterLabel: ((Double) -> String)?   // fraction (0.0...1.0) -> short label
+
+    // Fixed x-axis window in grid mode; keep in sync with SystemMonitor.maxHistory
+    // (150 samples at 2s). Data anchors to the right edge (now) and grows leftward.
+    let windowSeconds: Double = 300
 
     init(data: [Double], color: Color, maxValue: Double? = nil,
          sampleInterval: Double = 2.0, showGrid: Bool = false,
@@ -734,19 +738,29 @@ struct SparklineView: View {
             let maxVal = maxValue ?? max((data.max() ?? 1), 0.001)
             let w = geo.size.width
             let h = geo.size.height
-            // Inset the plot area so edge labels (0 and 100) sit on their gridlines
-            // without clipping; all five labels are then evenly spaced by construction.
-            let insetY: CGFloat = showGrid ? 6 : 0
-            let ph = h - insetY * 2
-            let yFor: (CGFloat) -> CGFloat = { frac in insetY + ph * (1 - frac) }
-            let span = Double(max(data.count - 1, 1)) * sampleInterval
+            // Reserved gutters: y labels live left of the plot, time labels below it,
+            // so axis text never overlaps the data line or its fill.
+            let gutterW: CGFloat = (showGrid && yQuarterLabel != nil) ? 26 : 0
+            let axisH: CGFloat = showGrid ? 11 : 0
+            let insetTop: CGFloat = showGrid ? 5 : 0
+            let plotW = w - gutterW
+            let plotH = h - axisH - insetTop
+            let yFor: (CGFloat) -> CGFloat = { frac in insetTop + plotH * (1 - frac) }
+            let xFor: (CGFloat) -> CGFloat = { frac in gutterW + plotW * frac }
+            let span = showGrid ? windowSeconds : Double(max(data.count - 1, 1)) * sampleInterval
             let interval = [15.0, 30.0, 60.0, 120.0].first(where: { span / $0 <= 4 }) ?? 120.0
+            // Age-based x: newest sample at the right edge, older samples at their true
+            // time position; the left region stays empty until the window fills.
+            let xForSample: (Int) -> CGFloat = { i in
+                let age = Double(data.count - 1 - i) * sampleInterval
+                return xFor(CGFloat(max(0, 1 - age / span)))
+            }
 
             ZStack(alignment: .topLeading) {
                 if showGrid {
                     Path { p in
                         for f in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                            p.move(to: CGPoint(x: 0, y: yFor(CGFloat(f))))
+                            p.move(to: CGPoint(x: gutterW, y: yFor(CGFloat(f))))
                             p.addLine(to: CGPoint(x: w, y: yFor(CGFloat(f))))
                         }
                     }
@@ -754,9 +768,9 @@ struct SparklineView: View {
 
                     Path { p in
                         for t in timeTicks(span: span, interval: interval) {
-                            let x = w * CGFloat(1 - t / span)
-                            p.move(to: CGPoint(x: x, y: insetY))
-                            p.addLine(to: CGPoint(x: x, y: insetY + ph))
+                            let x = xFor(CGFloat(1 - t / span))
+                            p.move(to: CGPoint(x: x, y: insetTop))
+                            p.addLine(to: CGPoint(x: x, y: insetTop + plotH))
                         }
                     }
                     .stroke(Color.primary.opacity(0.06), lineWidth: 1)
@@ -765,7 +779,7 @@ struct SparklineView: View {
                         Text(timeLabel(t))
                             .font(.system(size: 7))
                             .foregroundColor(.secondary.opacity(0.7))
-                            .position(x: w * CGFloat(1 - t / span), y: insetY + ph - 6)
+                            .position(x: xFor(CGFloat(1 - t / span)), y: h - axisH / 2)
                     }
 
                     if let lbl = yQuarterLabel {
@@ -773,7 +787,7 @@ struct SparklineView: View {
                             Text(lbl(f))
                                 .font(.system(size: 7))
                                 .foregroundColor(.secondary.opacity(0.7))
-                                .position(x: 12, y: yFor(CGFloat(f)))
+                                .position(x: gutterW / 2, y: yFor(CGFloat(f)))
                         }
                     }
                 }
@@ -781,7 +795,7 @@ struct SparklineView: View {
                 if data.count > 1 {
                     Path { path in
                         for (i, val) in data.enumerated() {
-                            let x = w * CGFloat(i) / CGFloat(data.count - 1)
+                            let x = xForSample(i)
                             let y = yFor(CGFloat(val / maxVal))
                             if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
                             else { path.addLine(to: CGPoint(x: x, y: y)) }
@@ -790,10 +804,9 @@ struct SparklineView: View {
                     .stroke(color, lineWidth: 1.5)
 
                     Path { path in
-                        path.move(to: CGPoint(x: 0, y: yFor(0)))
+                        path.move(to: CGPoint(x: xForSample(0), y: yFor(0)))
                         for (i, val) in data.enumerated() {
-                            let x = w * CGFloat(i) / CGFloat(data.count - 1)
-                            path.addLine(to: CGPoint(x: x, y: yFor(CGFloat(val / maxVal))))
+                            path.addLine(to: CGPoint(x: xForSample(i), y: yFor(CGFloat(val / maxVal))))
                         }
                         path.addLine(to: CGPoint(x: w, y: yFor(0)))
                         path.closeSubpath()
@@ -1133,7 +1146,7 @@ struct TrendRowView: View {
             }
             SparklineView(data: data, color: color, maxValue: maxValue,
                           showGrid: true, yQuarterLabel: yQuarterLabel)
-                .frame(height: 52)
+                .frame(height: 60)
             if let caption = caption {
                 Text(caption)
                     .font(.system(size: 9))
