@@ -668,6 +668,8 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "\n[HISTORY ~5min, 2s samples, oldest->newest, values are %]\n"
     out += "memory used: \(seriesSummary(monitor.memoryHistory))\n"
     out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
+    let peakUsedFrac = monitor.memoryHistory.max() ?? 0
+    out += "minimum available seen: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB (lowest point in window)\n"
     out += "gpu util: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
     out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
     out += "gpu mem in-use: \(seriesSummary(monitor.gpuMemHistory))\n"
@@ -1411,9 +1413,11 @@ struct ContentView: View {
 
                     // Memory trend: headerless card, context folded into the row title
                     VStack(alignment: .leading, spacing: 12) {
+                        let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
+                        let minAvailBytes = UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac))
                         TrendRowView(title: "MEMORY USED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.memoryStats.usedBytes),
-                                     caption: nil,
+                                     caption: "Minimum available memory seen: \(formatMemory(minAvailBytes))",
                                      data: monitor.memoryHistory,
                                      maxValue: 1.0, color: headroomColor,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
