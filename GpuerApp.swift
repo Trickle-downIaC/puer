@@ -1503,16 +1503,27 @@ struct ContentView: View {
 
                     // Trends
                     VStack(alignment: .leading, spacing: 12) {
-                        TrendRowView(title: "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                        // IN-USE is resident, resident is wired, and wired is capped, so the
+                        // wired limit is this chart's true ceiling (fallback: total if unset).
+                        let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : monitor.memoryStats.totalBytes
+                        let inUseCapFrac = Double(inUseCapBytes) / Double(monitor.memoryStats.totalBytes)
+                        let inUseCapGB = Double(inUseCapBytes) / 1_073_741_824
+                        TrendRowView(title: monitor.wiredLimitMB > 0
+                                        ? "GPU MEMORY IN-USE (of \(formatMemory(inUseCapBytes)) wired limit)"
+                                        : "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.gpuStats.inUseMemory),
                                      caption: nil,
                                      data: monitor.gpuMemHistory,
-                                     maxValue: 1.0, color: gpuPurple,
-                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                                     maxValue: inUseCapFrac, color: gpuPurple,
+                                     yQuarterLabel: { f in String(format: "%.0fG", f * inUseCapGB) })
+                        // MAPPED is reservation, not residency: file-backed mappings are not
+                        // wired, so the limit does not bound it and mapped can even exceed
+                        // total. Total is the largest honest denominator; clamp pins overflow
+                        // at the ceiling rather than drawing past the axis.
                         TrendRowView(title: "GPU MEMORY MAPPED (of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.gpuStats.allocatedMemory),
                                      caption: nil,
-                                     data: monitor.gpuMappedHistory,
+                                     data: monitor.gpuMappedHistory.map { min($0, 1.0) },
                                      maxValue: 1.0, color: gpuPurpleDark,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
