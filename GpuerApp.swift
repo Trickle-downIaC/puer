@@ -563,7 +563,7 @@ class SystemMonitor: ObservableObject {
             }
 
             // Top growers since last refresh (~5s): the "what changed" hint for pressure
-            // events. Growth, not size — the biggest resident is rarely the cause.
+            // events. Growth, not size; the biggest resident is rarely the cause.
             var growers: [(String, Double)] = []
             for (name, d) in agg {
                 let delta = d.mb - (self.prevAggMB[name] ?? d.mb)
@@ -1166,7 +1166,7 @@ struct ContentView: View {
             // LEFT COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // Header — indented past the traffic lights so it sits on the top row
+                    // Header, indented past the traffic lights so it sits on the top row
                     // beside them (rather than being pushed below them, which wasted space).
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
