@@ -439,6 +439,8 @@ class SystemMonitor: ObservableObject {
     // Launch baseline for the cumulative swap-out counter; its delta since launch
     // is this session's swap writes (SESSION OUT).
     var launchSwapOutsBytes: UInt64 = 0
+    var launchSwapInsBytes: UInt64 = 0
+    @Published var lastSwapIODate: Date? = nil  // last moment either swap rate was nonzero
     let wiredLimitMB: Int = {  // iogpu.wired_limit_mb; 0 means macOS default (unset)
         var v: Int = 0
         var sz = MemoryLayout<Int>.size
@@ -456,6 +458,7 @@ class SystemMonitor: ObservableObject {
         prevProcSampleTime = ProcessInfo.processInfo.systemUptime
         let seed = readMemoryStats()
         launchSwapOutsBytes = seed.swapOutsBytes
+        launchSwapInsBytes = seed.swapInsBytes
         prevSwapInsBytes = seed.swapInsBytes
         prevSwapOutsBytes = seed.swapOutsBytes
         prevSwapSampleTime = ProcessInfo.processInfo.systemUptime
@@ -508,6 +511,7 @@ class SystemMonitor: ObservableObject {
                 self.lowPowerMode = lowPower
                 self.swapInRateMBs = inRate
                 self.swapOutRateMBs = outRate
+                if inRate > 0.05 || outRate > 0.05 { self.lastSwapIODate = Date() }
                 if eventNow {
                     self.lastPressureEvent = Date()
                     if !self.latestGrowers.isEmpty { self.lastEventGrowers = self.latestGrowers }
@@ -644,7 +648,9 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
-    out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s; session swap out: \(gib(sessionSwapOut)) GiB\n"
+    let sessionSwapIn = monitor.memoryStats.swapInsBytes > monitor.launchSwapInsBytes ? monitor.memoryStats.swapInsBytes - monitor.launchSwapInsBytes : 0
+    let lastIODesc = monitor.lastSwapIODate.map { "\(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago" } ?? "none since launch"
+    out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s; session out: \(gib(sessionSwapOut)) GiB, session in: \(gib(sessionSwapIn)) GiB; last swap io: \(lastIODesc)\n"
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > mem.wiredBytes ? limitBytes - mem.wiredBytes : 0
@@ -1491,10 +1497,24 @@ struct ContentView: View {
                         Text("Swap (disk overflow)")
                             .font(.system(size: 13, weight: .semibold))
                         let sessionOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
+                        let sessionIn = monitor.memoryStats.swapInsBytes > monitor.launchSwapInsBytes ? monitor.memoryStats.swapInsBytes - monitor.launchSwapInsBytes : 0
+                        // Exact counters: zero session traffic plus an idle LAST I/O clock
+                        // is proof the on-disk swap is cold residue for this session.
+                        let swapIOActive = monitor.swapInRateMBs > 0.05 || monitor.swapOutRateMBs > 0.05
+                        let lastIO = swapIOActive ? "now" : (monitor.lastSwapIODate.map { d -> String in
+                            let m = Int(Date().timeIntervalSince(d) / 60)
+                            return m < 1 ? "<1 min ago" : "\(m) min ago"
+                        } ?? "-")
                         HStack(spacing: 12) {
                             StatItem(label: "ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "SESSION IN", value: formatMemory(sessionIn), color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             StatItem(label: "SESSION OUT", value: formatMemory(sessionOut), color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        HStack(spacing: 12) {
+                            StatItem(label: "LAST I/O", value: lastIO, color: swapIOActive ? .orange : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             StatItem(label: "IN RATE", value: String(format: "%.1f MB/s", monitor.swapInRateMBs), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
