@@ -1045,6 +1045,38 @@ struct PressureBannerView: View {
     }
 }
 
+// A labeled full-width trend row: metric name (with units), current value inline,
+// sparkline beneath, optional caption. Replaces the old unlabeled side-by-side charts.
+struct TrendRowView: View {
+    let title: String
+    let current: String
+    let caption: String?
+    let data: [Double]
+    let maxValue: Double?
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text(current)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(color)
+            }
+            SparklineView(data: data, color: color, maxValue: maxValue)
+                .frame(height: 34)
+            if let caption = caption {
+                Text(caption)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var monitor: SystemMonitor
     @State private var reportCopied = false
@@ -1216,38 +1248,28 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
 
-                    // GPU UTILIZATION
-                    RateCardView(
-                        title: "GPU UTILIZATION",
-                        value: "\(monitor.gpuStats.deviceUtilization)%",
-                        subtitle: "Renderer \(monitor.gpuStats.rendererUtilization)% \u{2022} Tiler \(monitor.gpuStats.tilerUtilization)%",
-                        icon: "gpu",
-                        color: .green
-                    )
-
-                    // HISTORY
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("History (5 min)")
+                    // TRENDS (replaces GPU tile + unlabeled side-by-side history)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Trends (last 5 min, 2s samples)")
                             .font(.system(size: 12, weight: .semibold))
 
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Available")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                SparklineView(data: monitor.memoryHistory.map { 1.0 - $0 }, color: headroomColor, maxValue: 1.0)
-                                    .frame(height: 44)
-                            }
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("GPU Utilization")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                SparklineView(data: monitor.gpuHistory.map { Double($0) }, color: .green, maxValue: 100.0)
-                                    .frame(height: 44)
-                            }
-                        }
+                        TrendRowView(title: "MEMORY AVAILABLE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                     current: formatMemory(monitor.memoryStats.availableBytes),
+                                     caption: nil,
+                                     data: monitor.memoryHistory.map { 1.0 - $0 },
+                                     maxValue: 1.0, color: headroomColor)
+                        TrendRowView(title: "GPU UTILIZATION (%)",
+                                     current: "\(monitor.gpuStats.deviceUtilization)%",
+                                     caption: "renderer \(monitor.gpuStats.rendererUtilization)% / tiler \(monitor.gpuStats.tilerUtilization)%",
+                                     data: monitor.gpuHistory.map { Double($0) },
+                                     maxValue: 100.0, color: .green)
+                        TrendRowView(title: "GPU MEMORY IN-USE (auto-scaled)",
+                                     current: formatMemory(monitor.gpuStats.inUseMemory),
+                                     caption: "mapped total: \(formatMemory(monitor.gpuStats.allocatedMemory))",
+                                     data: monitor.gpuMemHistory,
+                                     maxValue: nil, color: .mint)
                     }
-                    .padding(10)
+                    .padding(12)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
                 }
@@ -1304,10 +1326,11 @@ struct ContentView: View {
 
                     // CPU history
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("History (5 min)")
-                            .font(.system(size: 12, weight: .semibold))
-                        SparklineView(data: monitor.cpuHistory.map { $0 * 100 }, color: .blue, maxValue: 100.0)
-                            .frame(height: 44)
+                        TrendRowView(title: "CPU LOAD (%, last 5 min)",
+                                     current: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
+                                     caption: nil,
+                                     data: monitor.cpuHistory.map { $0 * 100 },
+                                     maxValue: 100.0, color: .blue)
                     }
                     .padding(10)
                     .background(Color.primary.opacity(0.03))
