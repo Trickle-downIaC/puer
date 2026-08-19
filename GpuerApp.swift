@@ -413,6 +413,7 @@ class SystemMonitor: ObservableObject {
     @Published var memoryHistory: [Double] = []  // used fraction
     @Published var gpuHistory: [Int] = []  // device utilization %
     @Published var gpuMemHistory: [Double] = []  // in-use GPU memory fraction
+    @Published var gpuMappedHistory: [Double] = []  // GPU-mapped memory fraction
     @Published var cpuHistory: [Double] = []  // overall CPU busy fraction
 
     // Window (seconds) over which per-process recent CPU% is measured; matches the slow timer.
@@ -522,6 +523,9 @@ class SystemMonitor: ObservableObject {
                 let gpuMemFrac = totalMem > 0 ? Double(gpu.inUseMemory) / Double(totalMem) : 0
                 self.gpuMemHistory.append(gpuMemFrac)
                 if self.gpuMemHistory.count > self.maxHistory { self.gpuMemHistory.removeFirst() }
+                let gpuMappedFrac = totalMem > 0 ? Double(gpu.allocatedMemory) / Double(totalMem) : 0
+                self.gpuMappedHistory.append(gpuMappedFrac)
+                if self.gpuMappedHistory.count > self.maxHistory { self.gpuMappedHistory.removeFirst() }
 
                 self.cpuHistory.append(cpu.overall)
                 if self.cpuHistory.count > self.maxHistory { self.cpuHistory.removeFirst() }
@@ -667,6 +671,8 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "gpu util: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
     out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
     out += "gpu mem in-use: \(seriesSummary(monitor.gpuMemHistory))\n"
+    out += "gpu mem mapped: \(seriesSummary(monitor.gpuMappedHistory))\n"
+    out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
     out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
     out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
     out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
@@ -1238,7 +1244,7 @@ struct ContentView: View {
             // LEFT COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionHeader(title: "Memory", icon: "memorychip")
+                    SectionHeader(title: "Unified Memory", icon: "memorychip")
 
                     // HEADLINE: Available memory
                     VStack(alignment: .leading, spacing: 6) {
@@ -1403,9 +1409,9 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
 
-                    // TRENDS (replaces GPU tile + unlabeled side-by-side history)
+                    // Memory trend (last 5 min, 2s samples)
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Trends (last 5 min, 2s samples)")
+                        Text("Trend (last 5 min, 2s samples)")
                             .font(.system(size: 12, weight: .semibold))
 
                         TrendRowView(title: "MEMORY AVAILABLE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
@@ -1414,17 +1420,40 @@ struct ContentView: View {
                                      data: monitor.memoryHistory.map { 1.0 - $0 },
                                      maxValue: 1.0, color: headroomColor,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // GPU SECTION: utilization and memory claims, all AGX-scoped
+                    SectionHeader(title: "GPU", icon: "gpu")
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 16) {
+                            StatItem(label: "UTILIZATION", value: "\(monitor.gpuStats.deviceUtilization)%", color: .green)
+                            StatItem(label: "RENDERER", value: "\(monitor.gpuStats.rendererUtilization)%", color: .secondary)
+                            StatItem(label: "TILER", value: "\(monitor.gpuStats.tilerUtilization)%", color: .secondary)
+                            StatItem(label: "MEM IN-USE", value: formatMemory(monitor.gpuStats.inUseMemory), color: .mint)
+                            StatItem(label: "MEM MAPPED", value: formatMemory(monitor.gpuStats.allocatedMemory), color: .secondary)
+                        }
+
                         TrendRowView(title: "GPU UTILIZATION (%)",
                                      current: "\(monitor.gpuStats.deviceUtilization)%",
-                                     caption: "renderer \(monitor.gpuStats.rendererUtilization)% / tiler \(monitor.gpuStats.tilerUtilization)%",
+                                     caption: nil,
                                      data: monitor.gpuHistory.map { Double($0) },
                                      maxValue: 100.0, color: .green,
                                      yQuarterLabel: { f in "\(Int(f * 100))" })
                         TrendRowView(title: "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.gpuStats.inUseMemory),
-                                     caption: "mapped total: \(formatMemory(monitor.gpuStats.allocatedMemory))",
+                                     caption: nil,
                                      data: monitor.gpuMemHistory,
                                      maxValue: 1.0, color: .mint,
+                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                        TrendRowView(title: "GPU MEMORY MAPPED (of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                     current: formatMemory(monitor.gpuStats.allocatedMemory),
+                                     caption: nil,
+                                     data: monitor.gpuMappedHistory,
+                                     maxValue: 1.0, color: .teal,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
                     .padding(12)
@@ -1524,7 +1553,7 @@ struct ContentView: View {
             // RIGHT COLUMN: Process footprints
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    SectionHeader(title: "Memory Footprint", icon: "cpu")
+                    SectionHeader(title: "Processes", icon: "list.bullet.rectangle")
                     Spacer()
                     let totalProc = monitor.processes.reduce(0.0) { $0 + $1.residentMB }
                     Text("\(monitor.processes.count) \u{2022} \(formatMB(totalProc))")
