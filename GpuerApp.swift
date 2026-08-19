@@ -434,6 +434,9 @@ class SystemMonitor: ObservableObject {
     @Published var lastPressureEvent: Date? = nil
     @Published var lastEventGrowers: [String] = []  // "name +N MB" captured near the event
     let launchDate = Date()  // for "monitoring for N min" context in the report
+    // Launch baseline for the cumulative swap-out counter; its delta since launch
+    // is this session's swap writes (SESSION OUT).
+    var launchSwapOutsBytes: UInt64 = 0
     let wiredLimitMB: Int = {  // iogpu.wired_limit_mb; 0 means macOS default (unset)
         var v: Int = 0
         var sz = MemoryLayout<Int>.size
@@ -450,6 +453,7 @@ class SystemMonitor: ObservableObject {
         prevCPUTicks = readPerCoreTicks()
         prevProcSampleTime = ProcessInfo.processInfo.systemUptime
         let seed = readMemoryStats()
+        launchSwapOutsBytes = seed.swapOutsBytes
         prevSwapInsBytes = seed.swapInsBytes
         prevSwapOutsBytes = seed.swapOutsBytes
         prevSwapSampleTime = ProcessInfo.processInfo.systemUptime
@@ -630,7 +634,8 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "used: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState))\n"
-    out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s\n"
+    let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
+    out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s; session swap out: \(gib(sessionSwapOut)) GiB\n"
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > mem.wiredBytes ? limitBytes - mem.wiredBytes : 0
@@ -868,12 +873,18 @@ struct StatItem: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // Never wrap: shrink slightly instead, so label and value each stay on
+            // one line and stat cells keep a shared baseline at any column width.
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Text(value)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
     }
 }
@@ -1244,8 +1255,11 @@ struct ContentView: View {
                             }
                             GridRow {
                                 StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
-                                StatItem(label: "SWAPPED", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
-                                StatItem(label: "SWAP ACTIVITY", value: String(format: "%.1f MB/s", monitor.swapInRateMBs + monitor.swapOutRateMBs), color: .secondary)
+                                let lastPressure = monitor.lastPressureEvent.map { d -> String in
+                                    let m = Int(Date().timeIntervalSince(d) / 60)
+                                    return m < 1 ? "<1 min ago" : "\(m) min ago"
+                                } ?? "-"
+                                StatItem(label: "LAST PRESSURE", value: lastPressure, color: monitor.lastPressureEvent != nil ? .orange : .secondary)
                             }
                         }
                         .padding(.top, 2)
@@ -1265,8 +1279,6 @@ struct ContentView: View {
                         StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
                                    color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
                         Spacer()
-                        let lastPressure = monitor.lastPressureEvent.map { "\(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago" } ?? "none since launch"
-                        StatItem(label: "LAST PRESSURE", value: lastPressure, color: .secondary)
                     }
                     .padding(10)
                     .background(Color.primary.opacity(0.03))
@@ -1345,6 +1357,26 @@ struct ContentView: View {
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                                 .padding(.top, 2)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // SWAP: overflow out of unified memory onto disk
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Swap (disk overflow)")
+                            .font(.system(size: 13, weight: .semibold))
+                        let sessionOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
+                        HStack(spacing: 12) {
+                            StatItem(label: "ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "SESSION OUT", value: formatMemory(sessionOut), color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "IN RATE", value: String(format: "%.1f MB/s", monitor.swapInRateMBs), color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "OUT RATE", value: String(format: "%.1f MB/s", monitor.swapOutRateMBs), color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     .padding(12)
