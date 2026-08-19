@@ -1261,6 +1261,8 @@ struct ContentView: View {
                                 .gridCellUnsizedAxes(.horizontal)
                             GridRow {
                                 StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                                StatItem(label: "PRESSURE", value: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
+                                         color: monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary)
                                 let lastPressure = monitor.lastPressureEvent.map { d -> String in
                                     let m = Int(Date().timeIntervalSince(d) / 60)
                                     return m < 1 ? "<1 min ago" : "\(m) min ago"
@@ -1278,10 +1280,8 @@ struct ContentView: View {
                     // Pressure story: ongoing / past-event-this-session / stale residue
                     PressureBannerView(monitor: monitor)
 
-                    // SYSTEM STATUS: kernel/thermal verdicts
+                    // SYSTEM STATUS: thermal verdict
                     HStack(spacing: 14) {
-                        StatusPill(title: "Kernel", state: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
-                                   color: monitor.memoryStats.kernelPressureLevel > 2 ? .red : (monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .green))
                         StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
                                    color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
                         Spacer()
