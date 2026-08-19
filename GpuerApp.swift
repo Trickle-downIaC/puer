@@ -1062,17 +1062,23 @@ let windowWidth: CGFloat = 1182
 let windowHeight: CGFloat = 720
 
 struct StatusPill: View {
-    let label: String
+    let title: String   // neutral subject, e.g. "Kernel"
+    let state: String   // colored state, e.g. "normal"
     let color: Color
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 10, weight: .semibold))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.15))
-            .foregroundColor(color)
-            .cornerRadius(5)
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
+            Text(state)
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(color.opacity(0.15))
+                .foregroundColor(color)
+                .cornerRadius(5)
+        }
     }
 }
 
@@ -1096,8 +1102,19 @@ struct PressureBannerView: View {
                    text: "Pressure \(minutesAgo(evt)) ago this session"
                         + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))"))
         } else if monitor.memoryStats.swapUsedBytes > 0 {
-            banner(color: .secondary, icon: "archivebox",
-                   text: "Swap residue: \(formatMemory(monitor.memoryStats.swapUsedBytes)) on disk; current swap activity 0 MB/s; no pressure events observed since app launch")
+            HStack(spacing: 14) {
+                Image(systemName: "archivebox")
+                    .foregroundColor(.secondary)
+                    .font(.system(size: 11))
+                StatItem(label: "SWAP ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
+                StatItem(label: "SWAP ACTIVITY", value: String(format: "%.1f MB/s", monitor.swapInRateMBs + monitor.swapOutRateMBs), color: .secondary)
+                StatItem(label: "PRESSURE EVENTS", value: "0 since launch", color: .secondary)
+                Spacer()
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+            .cornerRadius(6)
         }
     }
 
@@ -1236,7 +1253,7 @@ struct ContentView: View {
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Where your memory is going")
+                        Text("Unified memory allocation")
                             .font(.system(size: 13, weight: .semibold))
 
                         let total = Double(max(monitor.memoryStats.totalBytes, 1))
@@ -1288,7 +1305,7 @@ struct ContentView: View {
                             HStack(spacing: 14) {
                                 HStack(spacing: 4) {
                                     RoundedRectangle(cornerRadius: 2).fill(.blue.opacity(0.6)).frame(width: 10, height: 10)
-                                    Text("Apps & OS \(formatMemory(UInt64(otherUsed)))")
+                                    Text("Non-GPU used \(formatMemory(UInt64(otherUsed)))")
                                         .font(.system(size: 10))
                                 }
                                 HStack(spacing: 4) {
@@ -1310,9 +1327,9 @@ struct ContentView: View {
                         }
                         // Kernel/thermal verdicts + wired vs the Metal wired limit
                         HStack(spacing: 8) {
-                            StatusPill(label: "Kernel: \(kernelPressureName(monitor.memoryStats.kernelPressureLevel))",
+                            StatusPill(title: "Kernel", state: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
                                        color: monitor.memoryStats.kernelPressureLevel > 2 ? .red : (monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .green))
-                            StatusPill(label: "Thermal: \(thermalStateName(monitor.thermalState))",
+                            StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
                                        color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
                             Spacer()
                             Text(monitor.wiredLimitMB > 0
