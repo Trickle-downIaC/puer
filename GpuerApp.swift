@@ -433,6 +433,7 @@ class SystemMonitor: ObservableObject {
     @Published var swapOutRateMBs: Double = 0
     @Published var lastPressureEvent: Date? = nil
     @Published var lastEventGrowers: [String] = []  // "name +N MB" captured near the event
+    let launchDate = Date()  // for "monitoring for N min" context in the report
     let wiredLimitMB: Int = {  // iogpu.wired_limit_mb; 0 means macOS default (unset)
         var v: Int = 0
         var sz = MemoryLayout<Int>.size
@@ -622,6 +623,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     let ts = ISO8601DateFormatter().string(from: Date())
     var out = "=== PUER PERFORMANCE REPORT ===\n"
     out += "time: \(ts)\n"
+    out += "monitoring for: \(Int(Date().timeIntervalSince(monitor.launchDate) / 60)) min (history and events cover this window only)\n"
     out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
@@ -654,8 +656,14 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
     out += "gpu util: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
     out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
+    out += "gpu mem in-use: \(seriesSummary(monitor.gpuMemHistory))\n"
+    out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
     out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
     out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
+    out += "\n[TOP CPU over ~5s window]\n"
+    for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
+        out += String(format: "%6.1f%% CPU  %9.0f MB  %@\n", p.cpuPercent, p.residentMB, p.name)
+    }
     out += "\n[TOP PROCESSES by footprint, recent CPU over ~5s window]\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
         out += String(format: "%9.0f MB  %5.1f%% CPU  %@\n", p.residentMB, p.cpuPercent, p.name)
@@ -1004,7 +1012,7 @@ struct PressureBannerView: View {
     var body: some View {
         if ongoing {
             banner(color: .red, icon: "exclamationmark.octagon.fill",
-                   text: "Memory pressure NOW \u{2014} kernel \(kernelPressureName(monitor.memoryStats.kernelPressureLevel)), swap out \(String(format: "%.0f", monitor.swapOutRateMBs)) MB/s"
+                   text: "Memory pressure ACTIVE: kernel \(kernelPressureName(monitor.memoryStats.kernelPressureLevel)), swap out \(String(format: "%.0f", monitor.swapOutRateMBs)) MB/s"
                         + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} growing: \(monitor.lastEventGrowers.joined(separator: ", "))"))
         } else if let evt = monitor.lastPressureEvent {
             banner(color: .orange, icon: "exclamationmark.triangle.fill",
@@ -1012,7 +1020,7 @@ struct PressureBannerView: View {
                         + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))"))
         } else if monitor.memoryStats.swapUsedBytes > 0 {
             banner(color: .secondary, icon: "archivebox",
-                   text: "\(formatMemory(monitor.memoryStats.swapUsedBytes)) swap residue \u{2014} no pressure observed this session (may predate app launch)")
+                   text: "Swap residue: \(formatMemory(monitor.memoryStats.swapUsedBytes)) on disk; current swap activity 0 MB/s; no pressure events observed since app launch")
         }
     }
 
@@ -1090,7 +1098,7 @@ struct ContentView: View {
                     // HEADLINE: Available memory
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(String(format: "%.0f", availableGB))
+                            Text(String(format: "%.1f", availableGB))
                                 .font(.system(size: 48, weight: .bold, design: .rounded))
                                 .foregroundColor(headroomColor)
                             Text("GB Available")
@@ -1100,10 +1108,12 @@ struct ContentView: View {
                         Text("of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
-                        let appsEstimate = max(1, Int(availableGB / 2))
-                        Text("Room for ~\(appsEstimate) more large apps before pressure")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 16) {
+                            StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
+                            StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: .purple)
+                            StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                        }
+                        .padding(.top, 2)
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
