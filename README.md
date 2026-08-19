@@ -9,7 +9,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 
 ## Features
 
-- **"Available" memory headline** over a breakdown grid: app memory with its cache and active total, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
+- **"Used" memory headline** (available beneath it) over a breakdown grid: app memory with its cache and active total, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than displaying as if the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
 - **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
@@ -41,8 +41,8 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 
 - GPU model, core count, utilization, and tracked memory come from `/usr/sbin/ioreg -r -c AGXAccelerator -d 2`, specifically the `PerformanceStatistics` dictionary.
 - **GPU mapped** (`Alloc system memory` from IOKit) is the total memory the GPU driver has reserved. On machines running local AI models, this can be very large (e.g. 70 GB for a large LLM) because the model weights are memory-mapped for GPU access.
-- **GPU active** (`In use system memory` from IOKit) is the subset actively being read/written by the GPU right now.
-- The gap between mapped and active is memory that's allocated (often wired/pinned) but idle, for example model weights that aren't being processed this instant.
+- **GPU in-use** (`In use system memory` from IOKit) is the subset actively being read/written by the GPU right now.
+- The gap between mapped and in-use is memory that's allocated (often wired/pinned) but idle, for example model weights that aren't being processed this instant.
 - When GPU mapped memory is large, Puer explains why: this memory is your RAM shared with the GPU, not separate VRAM.
 
 ### CPU

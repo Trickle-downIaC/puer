@@ -1246,17 +1246,17 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Unified Memory", icon: "memorychip")
 
-                    // HEADLINE: Available memory
+                    // HEADLINE: Used memory (available on the line beneath)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(String(format: "%.1f", availableGB))
+                            Text(String(format: "%.1f", Double(monitor.memoryStats.usedBytes) / 1_073_741_824))
                                 .font(.system(size: 48, weight: .bold, design: .rounded))
                                 .foregroundColor(headroomColor)
-                            Text("GB Available")
+                            Text("GB Used")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundColor(headroomColor.opacity(0.8))
                         }
-                        Text("\(formatMemory(monitor.memoryStats.usedBytes)) used of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
+                        Text("\(formatMemory(monitor.memoryStats.availableBytes)) available of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                         Divider()
@@ -1326,7 +1326,7 @@ struct ContentView: View {
                         GeometryReader { geo in
                             let w = geo.size.width
                             HStack(spacing: 0) {
-                                // GPU active (bright green)
+                                // GPU in-use (bright green)
                                 Rectangle()
                                     .fill(Color.green)
                                     .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
@@ -1352,7 +1352,7 @@ struct ContentView: View {
                             HStack(spacing: 14) {
                                 HStack(spacing: 4) {
                                     RoundedRectangle(cornerRadius: 2).fill(.green).frame(width: 10, height: 10)
-                                    Text("GPU active \(formatMemory(monitor.gpuStats.inUseMemory))")
+                                    Text("GPU in-use \(formatMemory(monitor.gpuStats.inUseMemory))")
                                         .font(.system(size: 10))
                                 }
                                 HStack(spacing: 4) {
@@ -1409,15 +1409,12 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
 
-                    // Memory trend (last 5 min, 2s samples)
+                    // Memory trend: headerless card, context folded into the row title
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Trend (last 5 min, 2s samples)")
-                            .font(.system(size: 12, weight: .semibold))
-
-                        TrendRowView(title: "MEMORY AVAILABLE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
-                                     current: formatMemory(monitor.memoryStats.availableBytes),
+                        TrendRowView(title: "MEMORY USED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                     current: formatMemory(monitor.memoryStats.usedBytes),
                                      caption: nil,
-                                     data: monitor.memoryHistory.map { 1.0 - $0 },
+                                     data: monitor.memoryHistory,
                                      maxValue: 1.0, color: headroomColor,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
