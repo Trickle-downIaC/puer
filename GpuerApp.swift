@@ -1230,7 +1230,7 @@ struct ContentView: View {
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundColor(headroomColor.opacity(0.8))
                         }
-                        Text("of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
+                        Text("\(formatMemory(monitor.memoryStats.usedBytes)) used of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                         Divider()
