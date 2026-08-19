@@ -869,6 +869,7 @@ struct UsageBarView: View {
 struct ColumnToggle: View {
     let title: String
     let icon: String
+    var compact: Bool = false
     @Binding var isOn: Bool
 
     var body: some View {
@@ -876,8 +877,12 @@ struct ColumnToggle: View {
             HStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
+                if !compact {
+                    Text(title)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -1097,22 +1102,40 @@ let gpuPurpleDark = Color(red: 0.58, green: 0.30, blue: 0.88)
 let processRed = Color.pink
 
 struct StatusPill: View {
-    let title: String   // neutral subject, e.g. "Kernel"
+    let title: String   // neutral subject, e.g. "Thermal"
     let state: String   // colored state, e.g. "normal"
+    let icon: String    // compact-mode symbol, e.g. "thermometer"
     let color: Color
+    var compact: Bool = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-            Text(state)
+        if compact {
+            // Icon-only chip: the state still speaks through the color.
+            Image(systemName: icon)
                 .font(.system(size: 10, weight: .semibold))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
                 .background(color.opacity(0.15))
                 .foregroundColor(color)
                 .cornerRadius(5)
+                .help("\(title): \(state)")
+        } else {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(state)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(color.opacity(0.15))
+                    .foregroundColor(color)
+                    .cornerRadius(5)
+            }
         }
     }
 }
@@ -1203,6 +1226,89 @@ struct ContentView: View {
     @State private var showCPU = true
     @State private var showProcesses = true
 
+    // Two-layer compression restriction: the window can never shrink below the
+    // top bar's fully compacted (tier-3) width, and never below the summed
+    // minimums of whichever columns are visible. Fewer columns, more compression.
+    private var minWindowWidth: CGFloat {
+        let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
+        var columns: CGFloat = 0
+        if showMemory { columns += 300 }
+        if showGPU { columns += 260 }
+        if showCPU { columns += 260 }
+        if showProcesses { columns += 220 }
+        return max(topBarMin, columns)
+    }
+
+    @ViewBuilder
+    private func topBar(reportCompact: Bool, infoSegments: Int, togglesCompact: Bool, pillsCompact: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text("Puer")
+                .font(.system(size: 18, weight: .bold))
+                .lineLimit(1)
+                .fixedSize()
+            Divider()
+                .frame(height: 16)
+            HStack(spacing: 6) {
+                ColumnToggle(title: "Unified Memory", icon: "memorychip", compact: togglesCompact, isOn: $showMemory)
+                ColumnToggle(title: "GPU", icon: "cube.transparent", compact: togglesCompact, isOn: $showGPU)
+                ColumnToggle(title: "CPU", icon: "cpu", compact: togglesCompact, isOn: $showCPU)
+                ColumnToggle(title: "Processes", icon: "list.bullet.rectangle", compact: togglesCompact, isOn: $showProcesses)
+            }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
+            if infoSegments > 0 {
+                Divider()
+                    .frame(height: 16)
+                Text(deviceInfo(segments: infoSegments))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Divider()
+                .frame(height: 16)
+            StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState), icon: "thermometer",
+                       color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red),
+                       compact: pillsCompact)
+            Divider()
+                .frame(height: 16)
+            StatusPill(title: "Power", state: monitor.lowPowerMode ? "low power" : "normal", icon: "bolt.fill",
+                       color: monitor.lowPowerMode ? .orange : .green,
+                       compact: pillsCompact)
+            Spacer(minLength: 8)
+            Button(action: {
+                copyPerformanceReport(monitor: monitor)
+                reportCopied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
+            }) {
+                if reportCompact {
+                    Image(systemName: reportCopied ? "checkmark" : "doc.on.clipboard")
+                        .font(.system(size: 12, weight: .medium))
+                } else {
+                    Label(reportCopied ? "Copied" : "Copy Report",
+                          systemImage: reportCopied ? "checkmark" : "doc.on.clipboard")
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            .buttonStyle(.bordered)
+            .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
+        }
+        .padding(.leading, 76)
+        .padding(.trailing, 12)
+        .padding(.vertical, 8)
+    }
+
+    // Device info split into individually collapsible segments, dropped from the
+    // right: [name, CPU, GPU cores].
+    private func deviceInfo(segments: Int) -> String {
+        let parts = [monitor.gpuStats.model,
+                     "\(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU",
+                     "\(monitor.gpuStats.coreCount) GPU cores"]
+        return parts.prefix(segments).joined(separator: " \u{2022} ")
+    }
+
     private var availableGB: Double {
         Double(monitor.memoryStats.availableBytes) / 1_073_741_824
     }
@@ -1218,52 +1324,18 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // TOP BAR: app-wide and device-wide info spanning all three columns.
-            // Leading padding clears the traffic lights; the gap doubles as icon space.
-            HStack(spacing: 12) {
-                Text("Puer")
-                    .font(.system(size: 18, weight: .bold))
-                Divider()
-                    .frame(height: 16)
-                HStack(spacing: 6) {
-                    ColumnToggle(title: "Unified Memory", icon: "memorychip", isOn: $showMemory)
-                    ColumnToggle(title: "GPU", icon: "cube.transparent", isOn: $showGPU)
-                    ColumnToggle(title: "CPU", icon: "cpu", isOn: $showCPU)
-                    ColumnToggle(title: "Processes", icon: "list.bullet.rectangle", isOn: $showProcesses)
-                }
-                .padding(3)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
-                Divider()
-                    .frame(height: 16)
-                Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Divider()
-                    .frame(height: 16)
-                StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState),
-                           color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
-                Divider()
-                    .frame(height: 16)
-                StatusPill(title: "Power", state: monitor.lowPowerMode ? "low power" : "normal",
-                           color: monitor.lowPowerMode ? .orange : .green)
-                Spacer(minLength: 8)
-                Button(action: {
-                    copyPerformanceReport(monitor: monitor)
-                    reportCopied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
-                }) {
-                    Label(reportCopied ? "Copied" : "Copy Report",
-                          systemImage: reportCopied ? "checkmark" : "doc.on.clipboard")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
+            // TOP BAR, responsive. Collapse order as width shrinks: Copy Report label
+            // first, then device info a segment at a time (GPU cores, CPU, name),
+            // and only after all of that do the column toggles drop to icons.
+            ViewThatFits(in: .horizontal) {
+                topBar(reportCompact: false, infoSegments: 3, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 3, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 2, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 1, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true)
             }
-            .padding(.leading, 76)
-            .padding(.trailing, 12)
-            .padding(.vertical, 8)
 
             Divider()
 
@@ -1664,9 +1736,15 @@ struct ContentView: View {
             .frame(minWidth: 220, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
             }
             }
+            // Rebuild the splits whenever the visible set changes: HSplitView
+            // otherwise restores stale divider offsets from the previous set,
+            // which can clip the first column off the left edge.
+            .id("\(showMemory)\(showGPU)\(showCPU)\(showProcesses)")
         }
         // Columns no longer need traffic-light clearance; the top bar carries it.
-        .frame(minWidth: 1040, idealWidth: windowWidth, minHeight: 480, idealHeight: windowHeight)
+        // No fixed height floor: with column toggles, the honest minimum is whatever
+        // is visible, so bar-only mode can shrink to just the bar.
+        .frame(minWidth: minWindowWidth, idealWidth: windowWidth, minHeight: 0, idealHeight: windowHeight)
         .background(.background)
     }
 }
