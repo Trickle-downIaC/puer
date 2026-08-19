@@ -388,7 +388,7 @@ class SystemMonitor: ObservableObject {
 
     private var fastTimer: Timer?
     private var slowTimer: Timer?
-    private let maxHistory = 60
+    private let maxHistory = 150  // 5 min at the 2s fast-timer cadence
 
     // Previous samples needed to turn cumulative counters into rates.
     private var prevCPUTicks: [CPUCoreTicks] = []
@@ -506,6 +506,67 @@ class SystemMonitor: ObservableObject {
     func resortProcesses() {
         processes = sortProcesses(processes)
     }
+}
+
+// MARK: - Performance Report Export
+
+// Builds a plaintext snapshot + ~2min history block suitable for pasting into a
+// chat/agent for troubleshooting. Kept deliberately terse and unit-labeled.
+func buildPerformanceReport(monitor: SystemMonitor) -> String {
+    let mem = monitor.memoryStats
+    let gpu = monitor.gpuStats
+    let cpu = monitor.cpuStats
+
+    func gib(_ bytes: UInt64) -> String {
+        String(format: "%.2f", Double(bytes) / 1_073_741_824)
+    }
+    func pct(_ frac: Double) -> String {
+        String(format: "%.0f%%", frac * 100)
+    }
+    func seriesSummary(_ s: [Double]) -> String {
+        guard !s.isEmpty else { return "n/a" }
+        let mn = s.min() ?? 0, mx = s.max() ?? 0
+        let avg = s.reduce(0, +) / Double(s.count)
+        return "min \(pct(mn)) / avg \(pct(avg)) / max \(pct(mx))"
+    }
+    func seriesCompact(_ s: [Double]) -> String {
+        s.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")
+    }
+
+    let ts = ISO8601DateFormatter().string(from: Date())
+    var out = "=== PUER PERFORMANCE REPORT ===\n"
+    out += "time: \(ts)\n"
+    out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
+    out += "\n[MEMORY now]\n"
+    out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
+    out += "used: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
+    out += "\n[GPU now]\n"
+    out += "utilization: \(gpu.deviceUtilization)% (renderer \(gpu.rendererUtilization)%, tiler \(gpu.tilerUtilization)%)\n"
+    out += "memory in-use: \(gib(gpu.inUseMemory)) GiB, mapped: \(gib(gpu.allocatedMemory)) GiB\n"
+    out += "\n[CPU now]\n"
+    out += "overall: \(pct(cpu.overall)), P-cores: \(pct(cpu.performance)), E-cores: \(pct(cpu.efficiency))\n"
+    out += "per-core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ","))\n"
+    out += "\n[HISTORY ~5min, 2s samples, oldest->newest, values are %]\n"
+    out += "memory used: \(seriesSummary(monitor.memoryHistory))\n"
+    out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
+    out += "gpu util: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
+    out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
+    out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
+    out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
+    out += "\n[TOP PROCESSES by footprint, recent CPU over ~5s window]\n"
+    for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
+        out += String(format: "%9.0f MB  %5.1f%% CPU  %@\n", p.residentMB, p.cpuPercent, p.name)
+    }
+    out += "=== END REPORT ===\n"
+    return out
+}
+
+func copyPerformanceReport(monitor: SystemMonitor) {
+    let report = buildPerformanceReport(monitor: monitor)
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(report, forType: .string)
 }
 
 // MARK: - Formatting
@@ -815,6 +876,7 @@ let windowHeight: CGFloat = 720
 
 struct ContentView: View {
     @ObservedObject var monitor: SystemMonitor
+    @State private var reportCopied = false
 
     private var availableGB: Double {
         Double(monitor.memoryStats.availableBytes) / 1_073_741_824
@@ -847,7 +909,18 @@ struct ContentView: View {
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)  // shrink rather than wrap when the column is narrow
                         }
-                        Spacer()
+                        .layoutPriority(1)
+                        Spacer(minLength: 8)
+                        Button(action: {
+                            copyPerformanceReport(monitor: monitor)
+                            reportCopied = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
+                        }) {
+                            Image(systemName: reportCopied ? "checkmark" : "doc.on.clipboard")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
                     }
                     .padding(.leading, 60)
 
@@ -980,7 +1053,7 @@ struct ContentView: View {
 
                     // HISTORY
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("History (2 min)")
+                        Text("History (5 min)")
                             .font(.system(size: 12, weight: .semibold))
 
                         HStack(spacing: 12) {
@@ -1057,7 +1130,7 @@ struct ContentView: View {
 
                     // CPU history
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("History (2 min)")
+                        Text("History (5 min)")
                             .font(.system(size: 12, weight: .semibold))
                         SparklineView(data: monitor.cpuHistory.map { $0 * 100 }, color: .blue, maxValue: 100.0)
                             .frame(height: 44)
