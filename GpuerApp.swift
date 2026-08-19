@@ -700,11 +700,33 @@ struct SparklineView: View {
     let data: [Double]
     let color: Color
     let maxValue: Double?
+    let sampleInterval: Double                 // seconds between samples (time axis)
+    let showGrid: Bool                         // 0/25/50/75/100 gridlines + labels + time ticks
+    let yQuarterLabel: ((Double) -> String)?   // fraction (0.0...1.0) -> short label
 
-    init(data: [Double], color: Color, maxValue: Double? = nil) {
+    init(data: [Double], color: Color, maxValue: Double? = nil,
+         sampleInterval: Double = 2.0, showGrid: Bool = false,
+         yQuarterLabel: ((Double) -> String)? = nil) {
         self.data = data
         self.color = color
         self.maxValue = maxValue
+        self.sampleInterval = sampleInterval
+        self.showGrid = showGrid
+        self.yQuarterLabel = yQuarterLabel
+    }
+
+    private func timeTicks(span: Double, interval: Double) -> [Double] {
+        var out: [Double] = []
+        var t = interval
+        while t < span * 0.98 {
+            out.append(t)
+            t += interval
+        }
+        return out
+    }
+
+    private func timeLabel(_ t: Double) -> String {
+        t < 60 ? "-\(Int(t))s" : "-\(Int(t / 60))m"
     }
 
     var body: some View {
@@ -712,30 +734,72 @@ struct SparklineView: View {
             let maxVal = maxValue ?? max((data.max() ?? 1), 0.001)
             let w = geo.size.width
             let h = geo.size.height
+            // Inset the plot area so edge labels (0 and 100) sit on their gridlines
+            // without clipping; all five labels are then evenly spaced by construction.
+            let insetY: CGFloat = showGrid ? 6 : 0
+            let ph = h - insetY * 2
+            let yFor: (CGFloat) -> CGFloat = { frac in insetY + ph * (1 - frac) }
+            let span = Double(max(data.count - 1, 1)) * sampleInterval
+            let interval = [15.0, 30.0, 60.0, 120.0].first(where: { span / $0 <= 4 }) ?? 120.0
 
-            if data.count > 1 {
-                Path { path in
-                    for (i, val) in data.enumerated() {
-                        let x = w * CGFloat(i) / CGFloat(data.count - 1)
-                        let y = h - (h * CGFloat(val / maxVal))
-                        if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+            ZStack(alignment: .topLeading) {
+                if showGrid {
+                    Path { p in
+                        for f in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                            p.move(to: CGPoint(x: 0, y: yFor(CGFloat(f))))
+                            p.addLine(to: CGPoint(x: w, y: yFor(CGFloat(f))))
+                        }
+                    }
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+
+                    Path { p in
+                        for t in timeTicks(span: span, interval: interval) {
+                            let x = w * CGFloat(1 - t / span)
+                            p.move(to: CGPoint(x: x, y: insetY))
+                            p.addLine(to: CGPoint(x: x, y: insetY + ph))
+                        }
+                    }
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+
+                    ForEach(timeTicks(span: span, interval: interval), id: \.self) { t in
+                        Text(timeLabel(t))
+                            .font(.system(size: 7))
+                            .foregroundColor(.secondary.opacity(0.7))
+                            .position(x: w * CGFloat(1 - t / span), y: insetY + ph - 6)
+                    }
+
+                    if let lbl = yQuarterLabel {
+                        ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { f in
+                            Text(lbl(f))
+                                .font(.system(size: 7))
+                                .foregroundColor(.secondary.opacity(0.7))
+                                .position(x: 12, y: yFor(CGFloat(f)))
+                        }
                     }
                 }
-                .stroke(color, lineWidth: 1.5)
 
-                Path { path in
-                    path.move(to: CGPoint(x: 0, y: h))
-                    for (i, val) in data.enumerated() {
-                        let x = w * CGFloat(i) / CGFloat(data.count - 1)
-                        let y = h - (h * CGFloat(val / maxVal))
-                        if i == 0 { path.addLine(to: CGPoint(x: x, y: y)) }
-                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+                if data.count > 1 {
+                    Path { path in
+                        for (i, val) in data.enumerated() {
+                            let x = w * CGFloat(i) / CGFloat(data.count - 1)
+                            let y = yFor(CGFloat(val / maxVal))
+                            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                            else { path.addLine(to: CGPoint(x: x, y: y)) }
+                        }
                     }
-                    path.addLine(to: CGPoint(x: w, y: h))
-                    path.closeSubpath()
+                    .stroke(color, lineWidth: 1.5)
+
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: yFor(0)))
+                        for (i, val) in data.enumerated() {
+                            let x = w * CGFloat(i) / CGFloat(data.count - 1)
+                            path.addLine(to: CGPoint(x: x, y: yFor(CGFloat(val / maxVal))))
+                        }
+                        path.addLine(to: CGPoint(x: w, y: yFor(0)))
+                        path.closeSubpath()
+                    }
+                    .fill(color.opacity(0.15))
                 }
-                .fill(color.opacity(0.15))
             }
         }
     }
@@ -1054,6 +1118,7 @@ struct TrendRowView: View {
     let data: [Double]
     let maxValue: Double?
     let color: Color
+    let yQuarterLabel: ((Double) -> String)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1066,8 +1131,9 @@ struct TrendRowView: View {
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(color)
             }
-            SparklineView(data: data, color: color, maxValue: maxValue)
-                .frame(height: 34)
+            SparklineView(data: data, color: color, maxValue: maxValue,
+                          showGrid: true, yQuarterLabel: yQuarterLabel)
+                .frame(height: 52)
             if let caption = caption {
                 Text(caption)
                     .font(.system(size: 9))
@@ -1257,17 +1323,20 @@ struct ContentView: View {
                                      current: formatMemory(monitor.memoryStats.availableBytes),
                                      caption: nil,
                                      data: monitor.memoryHistory.map { 1.0 - $0 },
-                                     maxValue: 1.0, color: headroomColor)
+                                     maxValue: 1.0, color: headroomColor,
+                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                         TrendRowView(title: "GPU UTILIZATION (%)",
                                      current: "\(monitor.gpuStats.deviceUtilization)%",
                                      caption: "renderer \(monitor.gpuStats.rendererUtilization)% / tiler \(monitor.gpuStats.tilerUtilization)%",
                                      data: monitor.gpuHistory.map { Double($0) },
-                                     maxValue: 100.0, color: .green)
-                        TrendRowView(title: "GPU MEMORY IN-USE (auto-scaled)",
+                                     maxValue: 100.0, color: .green,
+                                     yQuarterLabel: { f in "\(Int(f * 100))" })
+                        TrendRowView(title: "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.gpuStats.inUseMemory),
                                      caption: "mapped total: \(formatMemory(monitor.gpuStats.allocatedMemory))",
                                      data: monitor.gpuMemHistory,
-                                     maxValue: nil, color: .mint)
+                                     maxValue: 1.0, color: .mint,
+                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
@@ -1330,7 +1399,8 @@ struct ContentView: View {
                                      current: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
                                      caption: nil,
                                      data: monitor.cpuHistory.map { $0 * 100 },
-                                     maxValue: 100.0, color: .blue)
+                                     maxValue: 100.0, color: .blue,
+                                     yQuarterLabel: { f in "\(Int(f * 100))" })
                     }
                     .padding(10)
                     .background(Color.primary.opacity(0.03))
