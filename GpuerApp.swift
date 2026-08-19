@@ -865,6 +865,34 @@ struct UsageBarView: View {
     }
 }
 
+// Tab-style toggle for showing and hiding a column from the top bar.
+struct ColumnToggle: View {
+    let title: String
+    let icon: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button(action: { isOn.toggle() }) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 5).fill(isOn ? Color.primary.opacity(0.12) : Color.clear))
+            // Transparent pixels don't hit-test, so without an explicit content
+            // shape the inactive (clear) state has a smaller click area than the
+            // active (filled) one. This makes both states clickable edge to edge.
+            .contentShape(RoundedRectangle(cornerRadius: 5))
+            .foregroundColor(isOn ? .primary : .secondary)
+        }
+        .buttonStyle(.plain)
+        .help(isOn ? "Hide the \(title) column" : "Show the \(title) column")
+    }
+}
+
 struct SectionHeader: View {
     let title: String
     let icon: String
@@ -985,9 +1013,9 @@ struct ProcessRowView: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.purple.opacity(0.1))
+                            .fill(processRed.opacity(0.1))
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.purple.opacity(0.5))
+                            .fill(processRed.opacity(0.5))
                             .frame(width: max(0, geo.size.width * CGFloat(proc.residentMB / max(maxMB, 1))))
                     }
                 }
@@ -1057,6 +1085,16 @@ struct PerCoreBarsView: View {
 // Fixed three-column layout: memory (500) + CPU (360) + processes (320) + 2 dividers.
 let windowWidth: CGFloat = 1420
 let windowHeight: CGFloat = 720
+
+// GPU family: two solid shades on one royal-violet ladder; every GPU element
+// and WIRED derive from these two constants.
+// Primary (light purple): active claims, utilization, WIRED.
+let gpuPurple = Color(red: 0.78, green: 0.42, blue: 1.00)
+// Secondary (one step darker): mapped/idle claims; solid so text stays readable.
+let gpuPurpleDark = Color(red: 0.58, green: 0.30, blue: 0.88)
+// Process-list accent: dark red. (SwiftUI's .pink renders as a red on macOS;
+// named for what it looks like, not the API token.)
+let processRed = Color.pink
 
 struct StatusPill: View {
     let title: String   // neutral subject, e.g. "Kernel"
@@ -1159,6 +1197,11 @@ struct TrendRowView: View {
 struct ContentView: View {
     @ObservedObject var monitor: SystemMonitor
     @State private var reportCopied = false
+    // Column visibility; HSplitView redistributes width among whatever remains.
+    @State private var showMemory = true
+    @State private var showGPU = true
+    @State private var showCPU = true
+    @State private var showProcesses = true
 
     private var availableGB: Double {
         Double(monitor.memoryStats.availableBytes) / 1_073_741_824
@@ -1180,6 +1223,16 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 Text("Puer")
                     .font(.system(size: 18, weight: .bold))
+                Divider()
+                    .frame(height: 16)
+                HStack(spacing: 6) {
+                    ColumnToggle(title: "Unified Memory", icon: "memorychip", isOn: $showMemory)
+                    ColumnToggle(title: "GPU", icon: "cube.transparent", isOn: $showGPU)
+                    ColumnToggle(title: "CPU", icon: "cpu", isOn: $showCPU)
+                    ColumnToggle(title: "Processes", icon: "list.bullet.rectangle", isOn: $showProcesses)
+                }
+                .padding(3)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
                 Divider()
                     .frame(height: 16)
                 Text("\(monitor.gpuStats.model) \u{2022} \(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU \u{2022} \(monitor.gpuStats.coreCount) GPU cores")
@@ -1216,6 +1269,7 @@ struct ContentView: View {
 
             // HSplitView gives each column a draggable divider so the user can resize sections.
             HSplitView {
+            if showMemory {
             // LEFT COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1247,7 +1301,7 @@ struct ContentView: View {
                             Divider()
                                 .gridCellUnsizedAxes(.horizontal)
                             GridRow {
-                                StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: .purple)
+                                StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: gpuPurple)
                                 if monitor.wiredLimitMB > 0 {
                                     let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
                                     let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
@@ -1301,15 +1355,18 @@ struct ContentView: View {
                         GeometryReader { geo in
                             let w = geo.size.width
                             HStack(spacing: 0) {
-                                // GPU in-use (bright green)
+                                // GPU in-use (the GPU family color, matching WIRED)
                                 Rectangle()
-                                    .fill(Color.green)
+                                    .fill(gpuPurple)
                                     .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
-                                // GPU mapped idle (lighter green)
+                                // GPU mapped idle: the one derived shade, used only in this chart
                                 Rectangle()
-                                    .fill(Color.green.opacity(0.3))
+                                    .fill(gpuPurpleDark)
                                     .frame(width: max(0, w * CGFloat(max(0, gpuShown - gpuActive) / total)))
-                                // Other used (blue)
+                                // Other used (blue). Color rule: the pool has two claim poles,
+                                // purple for GPU-pinned memory, blue for the CPU side, and APP is
+                                // software running CPU-side, so it shares blue. Dark red stays a local
+                                // accent for the process list only.
                                 Rectangle()
                                     .fill(Color.blue.opacity(0.6))
                                     .frame(width: max(0, w * CGFloat(otherUsed / total)))
@@ -1326,12 +1383,12 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 14) {
                                 HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.green).frame(width: 10, height: 10)
+                                    RoundedRectangle(cornerRadius: 2).fill(gpuPurple).frame(width: 10, height: 10)
                                     Text("GPU in-use \(formatMemory(monitor.gpuStats.inUseMemory))")
                                         .font(.system(size: 10))
                                 }
                                 HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.green.opacity(0.3)).frame(width: 10, height: 10)
+                                    RoundedRectangle(cornerRadius: 2).fill(gpuPurpleDark).frame(width: 10, height: 10)
                                     Text("GPU mapped \(formatMemory(monitor.gpuStats.allocatedMemory))")
                                         .font(.system(size: 10))
                                 }
@@ -1401,7 +1458,9 @@ struct ContentView: View {
                 .padding(.top, 12)
             }
             .frame(minWidth: 300, idealWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            }
 
+            if showGPU {
             // GPU COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1412,7 +1471,7 @@ struct ContentView: View {
                         value: "\(monitor.gpuStats.deviceUtilization)%",
                         subtitle: "Renderer \(monitor.gpuStats.rendererUtilization)% \u{2022} Tiler \(monitor.gpuStats.tilerUtilization)%",
                         icon: "cube.transparent",
-                        color: .green
+                        color: gpuPurple
                     )
 
                     VStack(alignment: .leading, spacing: 12) {
@@ -1420,7 +1479,7 @@ struct ContentView: View {
                                      current: "\(monitor.gpuStats.deviceUtilization)%",
                                      caption: nil,
                                      data: monitor.gpuHistory.map { Double($0) },
-                                     maxValue: 100.0, color: .green,
+                                     maxValue: 100.0, color: gpuPurple,
                                      yQuarterLabel: { f in "\(Int(f * 100))" })
                     }
                     .padding(12)
@@ -1432,9 +1491,9 @@ struct ContentView: View {
                         Text("Memory claims")
                             .font(.system(size: 12, weight: .semibold))
                         HStack(spacing: 16) {
-                            StatItem(label: "GPU MEM IN-USE", value: formatMemory(monitor.gpuStats.inUseMemory), color: .mint)
+                            StatItem(label: "GPU MEM IN-USE", value: formatMemory(monitor.gpuStats.inUseMemory), color: gpuPurple)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "GPU MEM MAPPED", value: formatMemory(monitor.gpuStats.allocatedMemory), color: .teal)
+                            StatItem(label: "GPU MEM MAPPED", value: formatMemory(monitor.gpuStats.allocatedMemory), color: gpuPurpleDark)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
@@ -1448,13 +1507,13 @@ struct ContentView: View {
                                      current: formatMemory(monitor.gpuStats.inUseMemory),
                                      caption: nil,
                                      data: monitor.gpuMemHistory,
-                                     maxValue: 1.0, color: .mint,
+                                     maxValue: 1.0, color: gpuPurple,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                         TrendRowView(title: "GPU MEMORY MAPPED (of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.gpuStats.allocatedMemory),
                                      caption: nil,
                                      data: monitor.gpuMappedHistory,
-                                     maxValue: 1.0, color: .teal,
+                                     maxValue: 1.0, color: gpuPurpleDark,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
                     .padding(12)
@@ -1465,7 +1524,9 @@ struct ContentView: View {
                 .padding(.top, 12)
             }
             .frame(minWidth: 260, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            }
 
+            if showCPU {
             // MIDDLE COLUMN: CPU
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1533,7 +1594,9 @@ struct ContentView: View {
                 .padding(.top, 12)
             }
             .frame(minWidth: 260, idealWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            }
 
+            if showProcesses {
             // RIGHT COLUMN: Process footprints
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -1588,6 +1651,7 @@ struct ContentView: View {
             .padding([.horizontal, .bottom], 12)
             .padding(.top, 12)
             .frame(minWidth: 220, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            }
             }
         }
         // Columns no longer need traffic-light clearance; the top bar carries it.
