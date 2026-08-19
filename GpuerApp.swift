@@ -1352,13 +1352,6 @@ struct ContentView: View {
                         }
                         .foregroundColor(.secondary)
 
-                        // Contextual explanation
-                        if monitor.gpuStats.allocatedMemory > 10_000_000_000 {
-                            Text("GPU has mapped \(formatMemory(monitor.gpuStats.allocatedMemory)) of your unified memory (likely model weights for local AI). This isn\u{2019}t separate VRAM \u{2014} it\u{2019}s your RAM, shared with the GPU.")
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
-                                .padding(.top, 2)
-                        }
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))

@@ -43,7 +43,6 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 - **GPU mapped** (`Alloc system memory` from IOKit) is the total memory the GPU driver has reserved. On machines running local AI models, this can be very large (e.g. 70 GB for a large LLM) because the model weights are memory-mapped for GPU access.
 - **GPU in-use** (`In use system memory` from IOKit) is the subset actively being read/written by the GPU right now.
 - The gap between mapped and in-use is memory that's allocated (often wired/pinned) but idle, for example model weights that aren't being processed this instant.
-- When GPU mapped memory is large, Puer explains why: this memory is your RAM shared with the GPU, not separate VRAM.
 
 ### CPU
 
