@@ -145,7 +145,7 @@ func readMemoryStats() -> MemoryStats {
 
     // Used memory matching Activity Monitor: app memory + wired + compressed
     // Inactive, speculative, purgeable, and free pages are all reclaimable
-    let appMem = active - purgeable
+    let appMem = active > purgeable ? active - purgeable : 0
     let usedApprox = appMem + wired + compressed
     let swap = getSwapUsage()
     let pressure = getMemoryPressure()
@@ -338,7 +338,7 @@ func sampleProcesses() -> [RawProc] {
     let pipe = Pipe()
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-    proc.arguments = ["-eo", "pid,rss,pcpu,comm", "-r"]
+    proc.arguments = ["-eo", "pid,rss,pcpu,comm", "-m"]
     proc.standardOutput = pipe
     proc.standardError = FileHandle.nullDevice
     do { try proc.run() } catch { return [] }
