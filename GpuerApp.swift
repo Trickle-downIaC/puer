@@ -1309,7 +1309,11 @@ struct ContentView: View {
                         let gpuAlloc = Double(monitor.gpuStats.allocatedMemory)
                         let gpuActive = Double(monitor.gpuStats.inUseMemory)
                         let available = Double(monitor.memoryStats.availableBytes)
-                        let gpuShown = min(gpuAlloc, total - available)
+                        // Cap the GPU segment at wired memory: GPU allocations live in the
+                        // wired category, so this prevents app or compressed memory from being
+                        // misattributed to the GPU when the driver reports large mappings while
+                        // Metal's residency set has been released (idle models).
+                        let gpuShown = min(gpuAlloc, Double(monitor.memoryStats.wiredBytes))
                         let otherUsed = max(0, total - gpuShown - available)
 
                         // Thick unified bar

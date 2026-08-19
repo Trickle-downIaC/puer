@@ -62,7 +62,7 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 
 - GPU stats are Apple-Silicon-specific. The current implementation depends on `AGXAccelerator`, so non-AGX Macs may show `Unknown` and zeroed GPU values.
 - Pressure events and history only cover the window since the app launched.
-- The unified pool bar shows GPU-mapped, Apps/OS, and Available as non-overlapping segments, but in reality GPU allocations overlap with the wired memory category. The bar caps GPU-mapped at `total - available` to ensure it never exceeds 100%.
+- The unified pool bar shows GPU-mapped, Non-GPU used, and Available as non-overlapping segments, but the GPU/non-GPU boundary is an approximation: GPU allocations live inside the wired category, so the bar caps the GPU segment at current wired memory. The Available segment is always exact.
 - The `ioreg` parsing is text-based, so future macOS formatting changes could break some fields.
 - Process aggregation by binary name can merge unrelated processes with the same executable name.
 
