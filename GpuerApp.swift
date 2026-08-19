@@ -678,13 +678,14 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
     out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
     out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
-    out += "\n[TOP CPU over ~5s window]\n"
-    for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
-        out += String(format: "%6.1f%% CPU  %9.0f MB  %@\n", p.cpuPercent, p.residentMB, p.name)
-    }
-    out += "\n[TOP PROCESSES by footprint, recent CPU over ~5s window]\n"
+    out += "\n[PROCESSES, recent CPU over ~5s window]\n"
+    out += "top by footprint:\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
         out += String(format: "%9.0f MB  %5.1f%% CPU  %@\n", p.residentMB, p.cpuPercent, p.name)
+    }
+    out += "top by cpu:\n"
+    for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
+        out += String(format: "%6.1f%% CPU  %9.0f MB  %@\n", p.cpuPercent, p.residentMB, p.name)
     }
     out += "=== END REPORT ===\n"
     return out
@@ -1050,34 +1051,6 @@ struct PerCoreBarsView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-    }
-}
-
-// Compact row for the "Top CPU" list: name + recent CPU% + proportional bar.
-struct CPURowView: View {
-    let proc: ProcessMemory
-    let maxCPU: Double
-
-    var body: some View {
-        VStack(spacing: 3) {
-            HStack {
-                Text(proc.name)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .lineLimit(1)
-                Spacer()
-                Text(String(format: "%.0f%%", proc.cpuPercent))
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2).fill(Color.blue.opacity(0.1))
-                    RoundedRectangle(cornerRadius: 2).fill(Color.blue.opacity(0.55))
-                        .frame(width: max(0, geo.size.width * CGFloat(proc.cpuPercent / max(maxCPU, 1))))
-                }
-            }
-            .frame(height: 4)
-        }
-        .padding(.vertical, 2)
     }
 }
 
@@ -1525,23 +1498,6 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
 
-                    // Top CPU consumers over the recent window
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Top CPU (last \(monitor.processWindowSeconds)s)")
-                            .font(.system(size: 12, weight: .semibold))
-                        let cpuProcs = Array(monitor.processes
-                            .sorted { $0.cpuPercent > $1.cpuPercent }
-                            .prefix(10))
-                        let maxCPU = cpuProcs.map(\.cpuPercent).max() ?? 1.0
-                        if cpuProcs.isEmpty {
-                            Text("Loading\u{2026}").font(.system(size: 11)).foregroundColor(.secondary)
-                        } else {
-                            ForEach(cpuProcs) { proc in
-                                CPURowView(proc: proc, maxCPU: maxCPU)
-                                Divider()
-                            }
-                        }
-                    }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
