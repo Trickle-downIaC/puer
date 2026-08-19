@@ -1412,24 +1412,45 @@ struct ContentView: View {
             // GPU COLUMN
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // GPU SECTION: utilization and memory claims, all AGX-scoped
                     SectionHeader(title: "GPU", icon: "cube.transparent")
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(spacing: 16) {
-                            StatItem(label: "UTILIZATION", value: "\(monitor.gpuStats.deviceUtilization)%", color: .green)
-                            StatItem(label: "RENDERER", value: "\(monitor.gpuStats.rendererUtilization)%", color: .secondary)
-                            StatItem(label: "TILER", value: "\(monitor.gpuStats.tilerUtilization)%", color: .secondary)
-                            StatItem(label: "MEM IN-USE", value: formatMemory(monitor.gpuStats.inUseMemory), color: .mint)
-                            StatItem(label: "MEM MAPPED", value: formatMemory(monitor.gpuStats.allocatedMemory), color: .secondary)
-                        }
+                    RateCardView(
+                        title: "GPU UTILIZATION",
+                        value: "\(monitor.gpuStats.deviceUtilization)%",
+                        subtitle: "Renderer \(monitor.gpuStats.rendererUtilization)% \u{2022} Tiler \(monitor.gpuStats.tilerUtilization)%",
+                        icon: "cube.transparent",
+                        color: .green
+                    )
 
-                        TrendRowView(title: "GPU UTILIZATION (%)",
+                    VStack(alignment: .leading, spacing: 12) {
+                        TrendRowView(title: "GPU UTILIZATION (%, last 5 min)",
                                      current: "\(monitor.gpuStats.deviceUtilization)%",
                                      caption: nil,
                                      data: monitor.gpuHistory.map { Double($0) },
                                      maxValue: 100.0, color: .green,
                                      yQuarterLabel: { f in "\(Int(f * 100))" })
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // Memory claims on the unified pool, from the GPU's perspective
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Memory claims")
+                            .font(.system(size: 12, weight: .semibold))
+                        HStack(spacing: 16) {
+                            StatItem(label: "GPU MEM IN-USE", value: formatMemory(monitor.gpuStats.inUseMemory), color: .mint)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "GPU MEM MAPPED", value: formatMemory(monitor.gpuStats.allocatedMemory), color: .teal)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
+                    // Trends
+                    VStack(alignment: .leading, spacing: 12) {
                         TrendRowView(title: "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.gpuStats.inUseMemory),
                                      caption: nil,
@@ -1443,6 +1464,9 @@ struct ContentView: View {
                                      maxValue: 1.0, color: .teal,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
                 }
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
