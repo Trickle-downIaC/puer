@@ -1055,7 +1055,7 @@ struct PerCoreBarsView: View {
 }
 
 // Fixed three-column layout: memory (500) + CPU (360) + processes (320) + 2 dividers.
-let windowWidth: CGFloat = 1182
+let windowWidth: CGFloat = 1420
 let windowHeight: CGFloat = 720
 
 struct StatusPill: View {
@@ -1399,8 +1399,21 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
 
+
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+                }
+                .padding([.horizontal, .bottom], 16)
+                .padding(.top, 12)
+            }
+            .frame(minWidth: 300, idealWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+
+            // GPU COLUMN
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
                     // GPU SECTION: utilization and memory claims, all AGX-scoped
-                    SectionHeader(title: "GPU", icon: "gpu")
+                    SectionHeader(title: "GPU", icon: "cube.transparent")
 
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 16) {
@@ -1430,14 +1443,11 @@ struct ContentView: View {
                                      maxValue: 1.0, color: .teal,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
                 }
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 320, idealWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 260, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
 
             // MIDDLE COLUMN: CPU
             ScrollView {
@@ -1564,7 +1574,7 @@ struct ContentView: View {
             }
         }
         // Columns no longer need traffic-light clearance; the top bar carries it.
-        .frame(minWidth: 820, idealWidth: windowWidth, minHeight: 480, idealHeight: windowHeight)
+        .frame(minWidth: 1040, idealWidth: windowWidth, minHeight: 480, idealHeight: windowHeight)
         .background(.background)
     }
 }
