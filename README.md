@@ -5,7 +5,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 > [!NOTE]
 > This app was vibe coded using Opus 4.6 / 4.8, GPT-5.4, and Fable 5.
 
-![Screenshot of the Puer monitoring window](screenshot-upstream.png)
+![Screenshot of the Puer monitoring window](screenshot.png)
 
 ## Features
 
