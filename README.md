@@ -3,17 +3,13 @@
 SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory. It lives in the Dock and keeps collecting data while its window is closed; click the Dock icon to reopen the window.
 
 > [!NOTE]
-> This app was vibe coded using Claude Opus 4.6 / 4.8 and GPT-5.4. I do not have deep knowledge of macOS internals or SwiftUI such that I can confidently evaluate the end result.
->
-> This fork's changes (process-list and underflow fixes, the Copy Report export, the pressure/thermal/swap-rate layer, and the trends redesign) were reviewed and written with Claude Fable 5 against the measurement semantics documented below and in CLAUDE.md.
+> This app was vibe coded using Claude Opus 4.6 / 4.8, GPT-5.4, and Claude Fable 5. I do not have deep knowledge of macOS internals or SwiftUI such that I can confidently evaluate the end result.
 
-![Screenshot of the Puer three-column monitoring window (upstream version, predates this fork's UI changes)](screenshot-upstream.png)
-
-*The screenshot above predates this fork's changes (Copy Report button, pressure/thermal status pills, wired-vs-limit readout, APP/WIRED/COMPRESSED stat row, and the labeled static-scale trend charts); the current UI differs in those areas.*
+![Screenshot of the Puer three-column monitoring window](screenshot-upstream.png)
 
 ## Features
 
-- **"Available" headline** showing how much unified memory you can still use (one decimal), with an APP/WIRED/COMPRESSED breakdown of used memory
+- **"Available" headline** (one decimal, with used-of-total) over a breakdown grid: app memory with its cache and active total, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than pretending the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
 - **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
@@ -21,8 +17,8 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory. It lives
 - **Physical footprint** for per-process memory (the same metric Activity Monitor uses) instead of RSS, which inflates numbers by counting shared pages multiple times
 - **Labeled trend charts (last 5 min)**: available memory, GPU utilization, GPU memory in-use, and CPU load on static scales (0/25/50/75/100 gridlines, unit labels derived from the machine's total) with non-crowding time ticks
 - **Copy Report button**: one click copies a plaintext diagnostic block (hardware, current state, 5-minute histories, swap rates, pressure events, top processes by footprint and by CPU) for pasting into a chat, issue, or AI assistant
-- **Pressure story, not a vague swap warning**: kernel pressure and thermal state pills, swap in/out rates, a wired-memory-vs-limit readout, and a three-state banner: pressure now, past event with timestamp and the processes that grew most before it, or stale residue labeled as such
-- Three-column window: memory on the left, CPU in the middle, process footprints on the right
+- **Pressure story, not a vague swap warning**: a dedicated swap card (on disk, session swap out, split in/out rates) and an alert banner for ongoing pressure or a past event with timestamp and the processes that grew most before it
+- Three titled columns (Memory, CPU, Memory Footprint) under a device-wide top bar: hardware summary, whole-package thermal state, and power mode (low power flagged, since it caps performance)
 - **Runs in the Dock**, not the menu bar: closing the window keeps the app alive and collecting; reopen from the Dock
 
 ## How measurement works
@@ -36,7 +32,7 @@ Puer uses macOS system interfaces and command-line tools rather than private fra
 - **Available memory** is computed as `total - used`, where used is `total - free - speculative - purgeable`. This avoids double-counting purgeable and inactive pages, which can otherwise inflate the number beyond physical RAM.
 - Swap usage comes from `sysctl vm.swapusage`.
 - Memory pressure is derived from `/usr/bin/memory_pressure` by parsing the reported system-wide free percentage (legacy signal), alongside the kernel's own verdict from `sysctl kern.memorystatus_vm_pressure_level` (1 normal / 2 warn / 4 critical).
-- Thermal state comes from `ProcessInfo.thermalState`; the configured GPU wired limit from `sysctl iogpu.wired_limit_mb` (0 = macOS default, labeled as such).
+- Thermal state comes from `ProcessInfo.thermalState` and Low Power Mode from `ProcessInfo.isLowPowerModeEnabled`; the configured GPU wired limit from `sysctl iogpu.wired_limit_mb` (0 = macOS default, labeled as such).
 - Swap in/out rates are computed by diffing the cumulative `vm_statistics64` swap counters between samples. A "pressure event" (kernel level leaving normal, or swap-out exceeding 5 MB/s) is timestamped, and the top per-name footprint *growers* over the preceding refresh window are captured as the causal hint; growth rather than size, because the biggest resident is rarely the cause.
 
 ### GPU and unified memory
