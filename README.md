@@ -7,28 +7,27 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory. It lives
 >
 > This fork's changes (process-list and underflow fixes, the Copy Report export, the pressure/thermal/swap-rate layer, and the trends redesign) were reviewed and written with Claude Fable 5 against the measurement semantics documented below and in CLAUDE.md.
 
-![Screenshot of the Puer app on macOS, a three-column window monitoring an Apple M1 Max (8P/2E CPU, 24 GPU cores, 64 GB). Left column: a large orange "18 GB Available" readout of 64.0 GB unified memory with "Room for ~9 more large apps before pressure", a swap warning banner, a segmented "Where your memory is going" bar (GPU active / GPU mapped / apps & OS / available) with a legend and unified-memory explanation, a GPU Utilization section, and an Available / GPU Utilization history graph. Middle column: CPU utilization headline (20%) with separate performance-core and efficiency-core load bars, a per-core load bar chart for all ten logical cores colored by efficiency vs performance, a CPU history sparkline, and a "Top CPU (last 5s)" list. Right column: a Memory Footprint list sorted by memory, each process showing a footprint bar and recent CPU percentage.](screenshot-upstream.png)
+![Screenshot of the Puer three-column monitoring window (upstream version, predates this fork's UI changes)](screenshot-upstream.png)
 
 *The screenshot above predates this fork's changes (Copy Report button, pressure/thermal status pills, wired-vs-limit readout, APP/WIRED/COMPRESSED stat row, and the labeled static-scale trend charts); the current UI differs in those areas.*
 
 ## Features
 
 - **"Available" headline** showing how much unified memory you can still use (one decimal), with an APP/WIRED/COMPRESSED breakdown of used memory
-- **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool — no more pretending GPU has its own VRAM
+- **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than pretending the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
-- **CPU load split by core type** — overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
-- **Top CPU consumers over the last ~5s** — a recent-window CPU ranking (computed from per-process CPU-time deltas), not the lifetime average `ps` reports
+- **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
+- **Top CPU consumers over the last ~5s**: a recent-window ranking from per-process CPU-time deltas, not the lifetime average `ps` reports
 - **Physical footprint** for per-process memory (the same metric Activity Monitor uses) instead of RSS, which inflates numbers by counting shared pages multiple times
-- Swap usage with contextual explanation
-- **Labeled trend charts (last 5 min)** for available memory, GPU utilization, GPU memory in-use, and CPU load, on static scales (0/25/50/75/100 gridlines with unit labels derived from the machine's total memory) with dynamic time ticks
-- **Copy Report button**: one click copies a plaintext diagnostic block (hardware, current memory/GPU/CPU state, 5-minute history series, swap rates, pressure events, top processes by footprint and by CPU) for pasting into a chat, issue, or AI assistant
-- **Pressure story instead of a vague swap warning**: kernel pressure verdict (`kern.memorystatus_vm_pressure_level`) and thermal state as status pills, swap in/out rates, a wired-vs-`iogpu.wired_limit_mb` readout, and a three-state banner (ongoing pressure / past event this session with timestamp and the processes that *grew* most just before it / stale swap residue labeled as such)
+- **Labeled trend charts (last 5 min)**: available memory, GPU utilization, GPU memory in-use, and CPU load on static scales (0/25/50/75/100 gridlines, unit labels derived from the machine's total) with non-crowding time ticks
+- **Copy Report button**: one click copies a plaintext diagnostic block (hardware, current state, 5-minute histories, swap rates, pressure events, top processes by footprint and by CPU) for pasting into a chat, issue, or AI assistant
+- **Pressure story, not a vague swap warning**: kernel pressure and thermal state pills, swap in/out rates, a wired-memory-vs-limit readout, and a three-state banner: pressure now, past event with timestamp and the processes that grew most before it, or stale residue labeled as such
 - Three-column window: memory on the left, CPU in the middle, process footprints on the right
-- **Runs in the Dock**, not the menu bar — closing the window keeps the app alive and collecting; reopen from the Dock
+- **Runs in the Dock**, not the menu bar: closing the window keeps the app alive and collecting; reopen from the Dock
 
 ## How measurement works
 
-Gpuer uses macOS system interfaces and command-line tools rather than private frameworks.
+Puer uses macOS system interfaces and command-line tools rather than private frameworks.
 
 ### Memory
 
@@ -42,13 +41,13 @@ Gpuer uses macOS system interfaces and command-line tools rather than private fr
 
 ### GPU and unified memory
 
-On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same physical memory pool. Gpuer shows this as a single unified bar rather than separate sections:
+On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same physical memory pool. Puer shows this as a single unified bar rather than separate sections:
 
 - GPU model, core count, utilization, and tracked memory come from `/usr/sbin/ioreg -r -c AGXAccelerator -d 2`, specifically the `PerformanceStatistics` dictionary.
 - **GPU mapped** (`Alloc system memory` from IOKit) is the total memory the GPU driver has reserved. On machines running local AI models, this can be very large (e.g. 70 GB for a large LLM) because the model weights are memory-mapped for GPU access.
 - **GPU active** (`In use system memory` from IOKit) is the subset actively being read/written by the GPU right now.
-- The gap between mapped and active is memory that's allocated (often wired/pinned) but idle — for example, model weights that aren't being processed this instant.
-- When GPU mapped memory is large, Gpuer explains why: this memory is your RAM shared with the GPU, not separate VRAM. This is typically the reason "wired" memory appears very high on machines running local inference.
+- The gap between mapped and active is memory that's allocated (often wired/pinned) but idle, for example model weights that aren't being processed this instant.
+- When GPU mapped memory is large, Puer explains why: this memory is your RAM shared with the GPU, not separate VRAM. This is typically the reason "wired" memory appears very high on machines running local inference.
 
 ### CPU
 
@@ -59,9 +58,9 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 
 - Process list comes from `ps -eo pid,rss,pcpu,comm -r`.
 - Each process's memory is measured using **physical footprint** via `proc_pid_rusage(RUSAGE_INFO_V4)` and the `ri_phys_footprint` field. This is the same metric Activity Monitor shows in its "Memory" column. It avoids the problem where RSS (Resident Set Size) double-counts shared libraries and memory-mapped files across processes.
-- **Recent CPU%** is computed from the same `proc_pid_rusage` call by diffing each process's cumulative CPU time (`ri_user_time + ri_system_time`) between samples, over the ~5s refresh window — so it reflects what's busy *now*, not the lifetime average `ps` reports. Note these fields are in mach time units, not nanoseconds, so they're converted via `mach_timebase_info`.
+- **Recent CPU%** is computed from the same `proc_pid_rusage` call by diffing each process's cumulative CPU time (`ri_user_time + ri_system_time`) between samples, over the ~5s refresh window, so it reflects what's busy *now*, not the lifetime average `ps` reports. Note these fields are in mach time units, not nanoseconds, so they're converted via `mach_timebase_info`.
 - Processes are aggregated by executable name with a count shown (e.g. `node (10)`).
-- If `proc_pid_rusage` fails for a process (e.g. insufficient permissions for system processes), Gpuer falls back to RSS from `ps` for memory and to the `ps` `%CPU` value for CPU.
+- If `proc_pid_rusage` fails for a process (e.g. insufficient permissions for system processes), Puer falls back to RSS from `ps` for memory and to the `ps` `%CPU` value for CPU.
 
 ### Important limitations
 
@@ -76,8 +75,8 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 The app is an Xcode project that builds a real `Puer.app`:
 
 ```bash
-git clone https://github.com/svshevtsov/gpuer
-cd gpuer
+git clone https://github.com/Trickle-downIaC/puer
+cd puer
 open Puer.xcodeproj   # then hit Run in Xcode
 ```
 
@@ -98,8 +97,8 @@ The app deliberately runs **without App Sandbox** because it shells out to `iore
 For a throwaway run (bare binary, no `.app` bundle, no icon):
 
 ```bash
-swiftc -parse-as-library -framework SwiftUI -framework AppKit -framework IOKit -o Gpuer GpuerApp.swift
-./Gpuer
+swiftc -parse-as-library -framework SwiftUI -framework AppKit -framework IOKit -o Puer GpuerApp.swift
+./Puer
 ```
 
 Requires macOS and Xcode command line tools (`xcode-select --install`).
