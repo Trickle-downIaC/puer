@@ -1233,6 +1233,8 @@ struct ContentView: View {
                         Text("of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
+                        Divider()
+                            .padding(.vertical, 2)
                         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
                             GridRow {
                                 StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
@@ -1241,18 +1243,22 @@ struct ContentView: View {
                                 StatItem(label: "APP CACHE", value: formatMemory(monitor.memoryStats.activeBytes > monitor.memoryStats.appBytes ? monitor.memoryStats.activeBytes - monitor.memoryStats.appBytes : 0), color: .secondary)
                                 StatItem(label: "ACTIVE", value: formatMemory(monitor.memoryStats.activeBytes), color: .secondary)
                             }
+                            Divider()
+                                .gridCellUnsizedAxes(.horizontal)
                             GridRow {
                                 StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: .purple)
                                 if monitor.wiredLimitMB > 0 {
                                     let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
                                     let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
-                                    StatItem(label: "AVAILABLE", value: formatMemory(wiredAvail), color: .secondary)
-                                    StatItem(label: "LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                                    StatItem(label: "WIRED AVAILABLE", value: formatMemory(wiredAvail), color: .secondary)
+                                    StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
                                 } else {
-                                    StatItem(label: "AVAILABLE", value: "n/a", color: .secondary)
-                                    StatItem(label: "LIMIT", value: "macOS default", color: .secondary)
+                                    StatItem(label: "WIRED AVAILABLE", value: "n/a", color: .secondary)
+                                    StatItem(label: "WIRED LIMIT", value: "macOS default", color: .secondary)
                                 }
                             }
+                            Divider()
+                                .gridCellUnsizedAxes(.horizontal)
                             GridRow {
                                 StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
                                 let lastPressure = monitor.lastPressureEvent.map { d -> String in
