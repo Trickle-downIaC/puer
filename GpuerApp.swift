@@ -17,6 +17,9 @@ struct MemoryStats {
     let appBytes: UInt64  // approximate app-associated memory
     let swapUsedBytes: UInt64
     let pressure: Double  // derived from 1 - system-wide free percentage
+    let swapInsBytes: UInt64   // cumulative since boot (pages * pageSize)
+    let swapOutsBytes: UInt64  // cumulative since boot
+    let kernelPressureLevel: Int  // kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical
 
     var usedFraction: Double { Double(usedBytes) / Double(max(totalBytes, 1)) }
     var freeFraction: Double { Double(freeBytes) / Double(max(totalBytes, 1)) }
@@ -132,7 +135,8 @@ func readMemoryStats() -> MemoryStats {
     guard let vm = getVMStats() else {
         return MemoryStats(totalBytes: total, usedBytes: 0, activeBytes: 0, inactiveBytes: 0,
                            wiredBytes: 0, compressedBytes: 0, freeBytes: total, appBytes: 0,
-                           swapUsedBytes: 0, pressure: 0)
+                           swapUsedBytes: 0, pressure: 0,
+                           swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
     }
 
     let active = UInt64(vm.active_count) * pageSize
@@ -154,8 +158,36 @@ func readMemoryStats() -> MemoryStats {
         totalBytes: total, usedBytes: usedApprox, activeBytes: active,
         inactiveBytes: inactive, wiredBytes: wired, compressedBytes: compressed,
         freeBytes: total - usedApprox, appBytes: appMem,
-        swapUsedBytes: swap, pressure: pressure
+        swapUsedBytes: swap, pressure: pressure,
+        swapInsBytes: vm.swapins &* pageSize, swapOutsBytes: vm.swapouts &* pageSize,
+        kernelPressureLevel: readKernelPressureLevel()
     )
+}
+
+// Kernel's own memory pressure verdict. 1 = normal, 2 = warn, 4 = critical.
+// Falls back to 1 (normal) if the sysctl is unavailable.
+func readKernelPressureLevel() -> Int {
+    var v: Int32 = 1
+    var sz = MemoryLayout<Int32>.size
+    return sysctlbyname("kern.memorystatus_vm_pressure_level", &v, &sz, nil, 0) == 0 ? Int(v) : 1
+}
+
+func kernelPressureName(_ level: Int) -> String {
+    switch level {
+    case 2: return "warn"
+    case 4: return "critical"
+    default: return "normal"
+    }
+}
+
+func thermalStateName(_ s: ProcessInfo.ThermalState) -> String {
+    switch s {
+    case .nominal: return "nominal"
+    case .fair: return "fair"
+    case .serious: return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
+    }
 }
 
 // MARK: - GPU Stats via IOKit
@@ -372,7 +404,7 @@ func sampleProcesses() -> [RawProc] {
 // MARK: - Monitor
 
 class SystemMonitor: ObservableObject {
-    @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, freeBytes: 0, appBytes: 0, swapUsedBytes: 0, pressure: 0)
+    @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, freeBytes: 0, appBytes: 0, swapUsedBytes: 0, pressure: 0, swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
     @Published var gpuStats = GPUStats(deviceUtilization: 0, rendererUtilization: 0, tilerUtilization: 0, inUseMemory: 0, allocatedMemory: 0, coreCount: 0, model: "")
     @Published var cpuStats = CPUStats(overall: 0, performance: 0, efficiency: 0, perCore: [], performanceCoreCount: 0, efficiencyCoreCount: 0)
     @Published var processes: [ProcessMemory] = []
@@ -395,10 +427,31 @@ class SystemMonitor: ObservableObject {
     private var prevProcCPUTime: [Int: UInt64] = [:]  // pid -> cumulative CPU ns
     private var prevProcSampleTime: Double = 0        // systemUptime seconds
 
+    // Pressure/thermal/swap-rate state (feature: smarter pressure story)
+    @Published var thermalState: ProcessInfo.ThermalState = .nominal
+    @Published var swapInRateMBs: Double = 0
+    @Published var swapOutRateMBs: Double = 0
+    @Published var lastPressureEvent: Date? = nil
+    @Published var lastEventGrowers: [String] = []  // "name +N MB" captured near the event
+    let wiredLimitMB: Int = {  // iogpu.wired_limit_mb; 0 means macOS default (unset)
+        var v: Int = 0
+        var sz = MemoryLayout<Int>.size
+        return sysctlbyname("iogpu.wired_limit_mb", &v, &sz, nil, 0) == 0 ? v : 0
+    }()
+    private var prevSwapInsBytes: UInt64 = 0
+    private var prevSwapOutsBytes: UInt64 = 0
+    private var prevSwapSampleTime: Double = 0
+    private var latestGrowers: [String] = []          // updated every process refresh
+    private var prevAggMB: [String: Double] = [:]     // name -> footprint MB last refresh
+
     init() {
         // Seed cumulative-counter baselines so the first samples produce sane rates.
         prevCPUTicks = readPerCoreTicks()
         prevProcSampleTime = ProcessInfo.processInfo.systemUptime
+        let seed = readMemoryStats()
+        prevSwapInsBytes = seed.swapInsBytes
+        prevSwapOutsBytes = seed.swapOutsBytes
+        prevSwapSampleTime = ProcessInfo.processInfo.systemUptime
         refresh()
         refreshProcesses()
         // Memory + GPU stats every 2s
@@ -424,10 +477,32 @@ class SystemMonitor: ObservableObject {
             let currTicks = readPerCoreTicks()
             let cpu = computeCPUStats(prev: self.prevCPUTicks, curr: currTicks)
             if !currTicks.isEmpty { self.prevCPUTicks = currTicks }
+
+            // Swap in/out rates from cumulative counters (same diffing pattern as CPU).
+            let nowUp = ProcessInfo.processInfo.systemUptime
+            let dt = nowUp - self.prevSwapSampleTime
+            var inRate = 0.0, outRate = 0.0
+            if dt > 0.5 {
+                inRate = Double(mem.swapInsBytes &- self.prevSwapInsBytes) / dt / 1_048_576.0
+                outRate = Double(mem.swapOutsBytes &- self.prevSwapOutsBytes) / dt / 1_048_576.0
+            }
+            self.prevSwapInsBytes = mem.swapInsBytes
+            self.prevSwapOutsBytes = mem.swapOutsBytes
+            self.prevSwapSampleTime = nowUp
+            let thermal = ProcessInfo.processInfo.thermalState
+            // Pressure "event": kernel leaves normal, or sustained swap-out activity.
+            let eventNow = mem.kernelPressureLevel > 1 || outRate > 5.0
             DispatchQueue.main.async {
                 self.memoryStats = mem
                 self.gpuStats = gpu
                 self.cpuStats = cpu
+                self.thermalState = thermal
+                self.swapInRateMBs = inRate
+                self.swapOutRateMBs = outRate
+                if eventNow {
+                    self.lastPressureEvent = Date()
+                    if !self.latestGrowers.isEmpty { self.lastEventGrowers = self.latestGrowers }
+                }
 
                 self.memoryHistory.append(mem.usedFraction)
                 if self.memoryHistory.count > self.maxHistory { self.memoryHistory.removeFirst() }
@@ -486,6 +561,17 @@ class SystemMonitor: ObservableObject {
                                      residentMB: d.mb, cpuPercent: d.cpu)
             }
 
+            // Top growers since last refresh (~5s): the "what changed" hint for pressure
+            // events. Growth, not size — the biggest resident is rarely the cause.
+            var growers: [(String, Double)] = []
+            for (name, d) in agg {
+                let delta = d.mb - (self.prevAggMB[name] ?? d.mb)
+                if delta > 50 { growers.append((name, delta)) }  // >50 MB growth is signal
+            }
+            growers.sort { $0.1 > $1.1 }
+            self.latestGrowers = growers.prefix(3).map { String(format: "%@ +%.0f MB", $0.0, $0.1) }
+            self.prevAggMB = agg.mapValues { $0.mb }
+
             DispatchQueue.main.async {
                 self.processes = self.sortProcesses(aggregated)
             }
@@ -541,6 +627,22 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
     out += "used: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
+    out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState))\n"
+    out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s\n"
+    if monitor.wiredLimitMB > 0 {
+        let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
+        let headroom = limitBytes > mem.wiredBytes ? limitBytes - mem.wiredBytes : 0
+        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit (headroom \(gib(headroom)) GiB)\n"
+    } else {
+        out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
+    }
+    if let evt = monitor.lastPressureEvent {
+        let mins = Int(Date().timeIntervalSince(evt) / 60)
+        out += "last pressure event: \(mins) min ago this session"
+        out += monitor.lastEventGrowers.isEmpty ? "\n" : "; grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))\n"
+    } else {
+        out += "last pressure event: none observed this session\n"
+    }
     out += "\n[GPU now]\n"
     out += "utilization: \(gpu.deviceUtilization)% (renderer \(gpu.rendererUtilization)%, tiler \(gpu.tilerUtilization)%)\n"
     out += "memory in-use: \(gib(gpu.inUseMemory)) GiB, mapped: \(gib(gpu.allocatedMemory)) GiB\n"
@@ -874,6 +976,67 @@ struct CPURowView: View {
 let windowWidth: CGFloat = 1182
 let windowHeight: CGFloat = 720
 
+struct StatusPill: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.15))
+            .foregroundColor(color)
+            .cornerRadius(5)
+    }
+}
+
+// Three-state banner: ongoing pressure (red, with swap-out rate and growers),
+// past event this session (orange, with when + what grew), stale residue (quiet gray).
+// The app cannot see events from before its own launch; residue is labeled as such.
+struct PressureBannerView: View {
+    @ObservedObject var monitor: SystemMonitor
+
+    private var ongoing: Bool {
+        monitor.memoryStats.kernelPressureLevel > 1 || monitor.swapOutRateMBs > 5.0
+    }
+
+    var body: some View {
+        if ongoing {
+            banner(color: .red, icon: "exclamationmark.octagon.fill",
+                   text: "Memory pressure NOW \u{2014} kernel \(kernelPressureName(monitor.memoryStats.kernelPressureLevel)), swap out \(String(format: "%.0f", monitor.swapOutRateMBs)) MB/s"
+                        + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} growing: \(monitor.lastEventGrowers.joined(separator: ", "))"))
+        } else if let evt = monitor.lastPressureEvent {
+            banner(color: .orange, icon: "exclamationmark.triangle.fill",
+                   text: "Pressure \(minutesAgo(evt)) ago this session"
+                        + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))"))
+        } else if monitor.memoryStats.swapUsedBytes > 0 {
+            banner(color: .secondary, icon: "archivebox",
+                   text: "\(formatMemory(monitor.memoryStats.swapUsedBytes)) swap residue \u{2014} no pressure observed this session (may predate app launch)")
+        }
+    }
+
+    private func minutesAgo(_ d: Date) -> String {
+        let m = Int(Date().timeIntervalSince(d) / 60)
+        return m < 1 ? "under a minute" : "\(m) min"
+    }
+
+    private func banner(color: Color, icon: String, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+                .font(.system(size: 11))
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundColor(color)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08))
+        .cornerRadius(6)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var monitor: SystemMonitor
     @State private var reportCopied = false
@@ -947,21 +1110,8 @@ struct ContentView: View {
                     .background(headroomColor.opacity(0.06))
                     .cornerRadius(12)
 
-                    // Swap warning
-                    if monitor.memoryStats.swapUsedBytes > 0 {
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                                .font(.system(size: 11))
-                            Text("\(formatMemory(monitor.memoryStats.swapUsedBytes)) pushed to disk \u{2014} system was under pressure recently")
-                                .font(.system(size: 11))
-                                .foregroundColor(.orange)
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.orange.opacity(0.08))
-                        .cornerRadius(6)
-                    }
+                    // Pressure story: ongoing / past-event-this-session / stale residue
+                    PressureBannerView(monitor: monitor)
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
@@ -1037,6 +1187,20 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                                 .padding(.top, 2)
                         }
+                        // Kernel/thermal verdicts + wired vs the Metal wired limit
+                        HStack(spacing: 8) {
+                            StatusPill(label: "Kernel: \(kernelPressureName(monitor.memoryStats.kernelPressureLevel))",
+                                       color: monitor.memoryStats.kernelPressureLevel > 2 ? .red : (monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .green))
+                            StatusPill(label: "Thermal: \(thermalStateName(monitor.thermalState))",
+                                       color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red))
+                            Spacer()
+                            Text(monitor.wiredLimitMB > 0
+                                 ? "Wired \(formatMemory(monitor.memoryStats.wiredBytes)) of \(String(format: "%.1f", Double(monitor.wiredLimitMB) / 1024)) GB limit"
+                                 : "Wired \(formatMemory(monitor.memoryStats.wiredBytes)) (limit: macOS default)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.top, 4)
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
