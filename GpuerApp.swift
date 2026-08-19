@@ -510,7 +510,7 @@ class SystemMonitor: ObservableObject {
 
 // MARK: - Performance Report Export
 
-// Builds a plaintext snapshot + ~2min history block suitable for pasting into a
+// Builds a plaintext snapshot + ~5min history block suitable for pasting into a
 // chat/agent for troubleshooting. Kept deliberately terse and unit-labeled.
 func buildPerformanceReport(monitor: SystemMonitor) -> String {
     let mem = monitor.memoryStats
