@@ -1348,6 +1348,35 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // Bubble quadrant cells: primary (large colored value) and secondary
+    // (standard stat), equal-width so the plus hairline's center is the
+    // true column boundary.
+    @ViewBuilder
+    private func bubblePrimary(_ label: String, _ value: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundColor(color)
+                .lineLimit(1)
+        }
+        .fixedSize()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func bubbleSecondary(_ label: String, _ value: String) -> some View {
+        StatItem(label: label, value: value, color: .secondary)
+            .fixedSize()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     // Legend chip: a LegendItem in the same hoverable-bubble chrome as the
     // readout row, locked at natural size.
     @ViewBuilder
@@ -1370,7 +1399,7 @@ struct ContentView: View {
     private var minWindowWidth: CGFloat {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
-        if showMemory { columns += 380 }  // DIAGNOSTIC: restore with the frame above
+        if showMemory { columns += 500 }
         if showGPU { columns += 260 }
         if showCPU { columns += 260 }
         if showProcesses { columns += 220 }
@@ -1485,37 +1514,11 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Unified Memory", icon: "memorychip")
 
-                    // HEADLINE: the verdict pair (Used Strict, Available) lives in the
-                    // status-tinted bubble spanning the card; the secondary economy facts
-                    // sit beneath as an equal-width scaling row.
+                    // HEADLINE: 2x2 verdict bubble. Left column, primary: Used (Strict)
+                    // over Available. Right column, secondary: Used (Loose) over Total.
+                    // A dark plus-shaped hairline separates the quadrants, inset so it
+                    // never quite reaches the bubble's edges.
                     VStack(alignment: .leading, spacing: 10) {
-                        // Compressed to fit the column's declared minimum: smaller type,
-                        // tighter gaps, and AVAILABLE drops its "of total" (the total
-                        // still lives in the trend title below).
-                        HStack(alignment: .lastTextBaseline, spacing: 4) {
-                            Text(String(format: "%.1f", Double(monitor.memoryStats.usedBytes) / 1_073_741_824))
-                                .font(.system(size: 48, weight: .bold, design: .rounded))
-                                .foregroundColor(headroomColor)
-                                .lineLimit(1)
-                                .fixedSize()
-                            Text("GB Used (Strict)")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(headroomColor.opacity(0.8))
-                                .fixedSize()
-                            // Equal spacers on both sides let the divider hover centered
-                            // between the two readouts instead of hugging AVAILABLE.
-                            Spacer(minLength: 4)
-                            Divider()
-                                .frame(height: 34)
-                                .overlay(headroomColor.opacity(0.35))
-                            Spacer(minLength: 4)
-                            StatItem(label: "AVAILABLE", value: formatMemory(monitor.memoryStats.availableBytes), color: headroomColor)
-                                .fixedSize()
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(headroomColor.opacity(0.12)))
                         let usedLooseValue = formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes)
                         let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
                         let minAvailValue = formatMemory(UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac)))
@@ -1525,25 +1528,28 @@ struct ContentView: View {
                             return m < 1 ? "<1 min ago" : "\(m) min ago"
                         } ?? "-"
                         let lastPressureColor: Color = monitor.lastPressureEvent != nil ? .orange : .secondary
-                        // Two-state row: four across when they fit at natural size,
-                        // else facts over verdicts as two rows of two.
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 12) {
-                                headlineStat("USED (LOOSE)", usedLooseValue, .secondary)
-                                headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
-                                headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
-                                headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
+                        VStack(spacing: 0) {
+                            HStack(spacing: 0) {
+                                bubblePrimary("USED (STRICT)", formatMemory(monitor.memoryStats.usedBytes), headroomColor)
+                                bubbleSecondary("USED (LOOSE)", usedLooseValue)
                             }
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 12) {
-                                    headlineStat("USED (LOOSE)", usedLooseValue, .secondary)
-                                    headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
-                                }
-                                HStack(spacing: 12) {
-                                    headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
-                                    headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
-                                }
+                            HStack(spacing: 0) {
+                                bubblePrimary("AVAILABLE", formatMemory(monitor.memoryStats.availableBytes), headroomColor)
+                                bubbleSecondary("TOTAL", formatMemory(monitor.memoryStats.totalBytes))
                             }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .overlay {
+                            ZStack {
+                                Rectangle().fill(Color.black.opacity(0.4)).frame(width: 1).padding(.vertical, 8)
+                                Rectangle().fill(Color.black.opacity(0.4)).frame(height: 1).padding(.horizontal, 10)
+                            }
+                        }
+                        .background(RoundedRectangle(cornerRadius: 8).fill(headroomColor.opacity(0.12)))
+                        HStack(spacing: 12) {
+                            headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
+                            headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
+                            headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
                         }
                     }
                     .padding(16)
@@ -1803,7 +1809,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)  // DIAGNOSTIC floor: restore after identifying the blocker
+            .frame(minWidth: 500, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)  // floor sized to the five-chip readout row, which never wraps
             }
 
             if showGPU {
