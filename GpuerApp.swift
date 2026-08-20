@@ -667,7 +667,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // purgeable and speculative this reconstructs Activity Monitor's Cached
     // Files; in Puer's model all three live inside Available.
     let fileCache = UInt64(max(0, Int64(mem.activeBytes) + Int64(mem.inactiveBytes) - Int64(mem.appBytes) - Int64(mem.purgeableBytes)))
-    out += "purgeable cache: \(gib(mem.purgeableBytes)) GiB; speculative cache: \(gib(mem.speculativeBytes)) GiB; file cache: \(gib(fileCache)) GiB\n"
+    out += "purgeable: \(gib(mem.purgeableBytes)) GiB; speculative: \(gib(mem.speculativeBytes)) GiB; file-backed: \(gib(fileCache)) GiB\n"
     // Full kernel accounting identity: every physical page in a named bucket,
     // reconciled against total, with the bookkeeping residue shown explicitly.
     out += "kernel accounting: free \(gib(mem.freeCountBytes)) + active \(gib(mem.activeBytes)) + inactive \(gib(mem.inactiveBytes)) + speculative \(gib(mem.speculativeBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)) + throttled \(gib(mem.throttledBytes)) + reserved \(gib(mem.kernelOtherBytes)) = \(gib(mem.freeCountBytes + mem.activeBytes + mem.inactiveBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.throttledBytes + mem.kernelOtherBytes)) GiB (identity vs \(gib(mem.totalBytes)) total)\n"
@@ -1520,9 +1520,9 @@ struct ContentView: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], alignment: .leading, spacing: 6) {
                             LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
                             LegendItem(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)))
-                            LegendItem(color: .gray.opacity(0.42), label: "Purgeable Cache", value: formatMemory(UInt64(purgeableB)))
-                            LegendItem(color: .gray.opacity(0.32), label: "Speculative Cache", value: formatMemory(UInt64(speculativeB)))
-                            LegendItem(color: .gray.opacity(0.22), label: "File Cache", value: formatMemory(UInt64(fileCacheB)))
+                            LegendItem(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)))
+                            LegendItem(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)))
+                            LegendItem(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)))
                             LegendItem(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)))
                         }
                         .foregroundColor(.secondary)
