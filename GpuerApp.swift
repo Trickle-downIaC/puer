@@ -148,11 +148,16 @@ func readMemoryStats() -> MemoryStats {
     let inactive = UInt64(vm.inactive_count) * pageSize
     let wired = UInt64(vm.wire_count) * pageSize
     let compressed = UInt64(vm.compressor_page_count) * pageSize
-    let freeCount = UInt64(vm.free_count) * pageSize
+    let freeRaw = UInt64(vm.free_count) * pageSize
     let purgeable = UInt64(vm.purgeable_count) * pageSize
     let internalMem = UInt64(vm.internal_page_count) * pageSize
     let speculative = UInt64(vm.speculative_count) * pageSize
     let throttled = UInt64(vm.throttled_count) * pageSize
+    // free_count includes speculative pages on this macOS (verified against
+    // vm_stat, which subtracts them before printing "Pages free"). Subtract
+    // here too, or speculative is double-counted, the identity oversums, and
+    // the reserved carveout clamps to zero.
+    let freeCount = freeRaw > speculative ? freeRaw - speculative : 0
 
     // App memory per Activity Monitor's definition: internal (anonymous) pages
     // minus purgeable. The upstream code used active - purgeable, which wrongly
@@ -665,12 +670,11 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "purgeable cache: \(gib(mem.purgeableBytes)) GiB; speculative cache: \(gib(mem.speculativeBytes)) GiB; file cache: \(gib(fileCache)) GiB\n"
     // Full kernel accounting identity: every physical page in a named bucket,
     // reconciled against total, with the bookkeeping residue shown explicitly.
-    out += "kernel accounting: free \(gib(mem.freeCountBytes)) + active \(gib(mem.activeBytes)) + inactive \(gib(mem.inactiveBytes)) + speculative \(gib(mem.speculativeBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)) + throttled \(gib(mem.throttledBytes)) + unaccounted kernel \(gib(mem.kernelOtherBytes)) = \(gib(mem.freeCountBytes + mem.activeBytes + mem.inactiveBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.throttledBytes + mem.kernelOtherBytes)) GiB (identity vs \(gib(mem.totalBytes)) total)\n"
-    // Empirical fit, exact to +-0.01 GiB across load states on this macOS:
-    // Activity Monitor's "Memory Used" counts purgeable and speculative pages
-    // (reclaimable cache) in Used, which is why it reads ~1.5 GiB above ours
-    // and why its Used and Cached Files overlap by the purgeable amount.
-    out += "am-style used (empirical: app + purgeable + speculative + wired + compressed + unaccounted kernel): \(gib(mem.appBytes + mem.purgeableBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
+    out += "kernel accounting: free \(gib(mem.freeCountBytes)) + active \(gib(mem.activeBytes)) + inactive \(gib(mem.inactiveBytes)) + speculative \(gib(mem.speculativeBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)) + throttled \(gib(mem.throttledBytes)) + reserved \(gib(mem.kernelOtherBytes)) = \(gib(mem.freeCountBytes + mem.activeBytes + mem.inactiveBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.throttledBytes + mem.kernelOtherBytes)) GiB (identity vs \(gib(mem.totalBytes)) total)\n"
+    // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
+    // "Memory Used" counts purgeable cache and the reserved carveout in Used,
+    // which is why it reads above ours and overlaps its own Cached Files.
+    out += "am-style used (empirical: app + purgeable + wired + compressed + reserved): \(gib(mem.appBytes + mem.purgeableBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
@@ -1129,6 +1133,8 @@ let windowHeight: CGFloat = 720
 let gpuPurple = Color(red: 0.78, green: 0.42, blue: 1.00)
 // Secondary (one step darker): mapped/idle claims; solid so text stays readable.
 let gpuPurpleDark = Color(red: 0.58, green: 0.30, blue: 0.88)
+// Reserved carveout: deep brown, kept well apart from Compressed orange.
+let reservedBrown = Color(red: 0.42, green: 0.27, blue: 0.15)
 // Process-list accent: dark red. (SwiftUI's .pink renders as a red on macOS;
 // named for what it looks like, not the API token.)
 let processRed = Color.pink
@@ -1471,7 +1477,7 @@ struct ContentView: View {
                                 // so maximally far from Available. Then App, the wired family,
                                 // Compressed, and the reclaimable grey ladder.
                                 Rectangle()
-                                    .fill(Color.brown)
+                                    .fill(reservedBrown)
                                     .frame(width: max(0, w * CGFloat(kernelRemB / total)))
                                 Rectangle()
                                     .fill(Color.blue)
@@ -1510,8 +1516,8 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 14) {
                                 HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(Color.brown).frame(width: 10, height: 10)
-                                    Text("Kernel Remainder \(formatMemory(UInt64(kernelRemB)))")
+                                    RoundedRectangle(cornerRadius: 2).fill(reservedBrown).frame(width: 10, height: 10)
+                                    Text("Reserved \(formatMemory(UInt64(kernelRemB)))")
                                         .font(.system(size: 10))
                                 }
                                 HStack(spacing: 4) {
@@ -1526,7 +1532,7 @@ struct ContentView: View {
                                 }
                                 HStack(spacing: 4) {
                                     RoundedRectangle(cornerRadius: 2).fill(gpuPurpleDark).frame(width: 10, height: 10)
-                                    Text("Wired - GPU Mapped / OS / Other \(formatMemory(UInt64(wiredOther)))")
+                                    Text("Wired - Other \(formatMemory(UInt64(wiredOther)))")
                                         .font(.system(size: 10))
                                 }
                             }
