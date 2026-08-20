@@ -683,8 +683,8 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s; session out: \(gib(sessionSwapOut)) GiB, session in: \(gib(sessionSwapIn)) GiB; last swap io: \(lastIODesc)\n"
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
-        let headroom = limitBytes > mem.wiredBytes ? limitBytes - mem.wiredBytes : 0
-        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit (limit headroom \(gib(headroom)) GiB)\n"
+        let headroom = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
+        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit; gpu limit headroom at most \(gib(headroom)) GiB (limit caps gpu wiring only)\n"
     } else {
         out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
     }
@@ -1413,8 +1413,13 @@ struct ContentView: View {
                         HStack(spacing: 20) {
                             if monitor.wiredLimitMB > 0 {
                                 let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
-                                let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
-                                StatItem(label: "WIRED LIMIT HEADROOM", value: formatMemory(wiredAvail), color: .secondary)
+                                // The iogpu limit caps GPU wiring only: total wired can legally
+                                // exceed it on kernel wiring (observed live). True GPU-wired is
+                                // unmeasurable between In-Use and total, so show the exact upper
+                                // bound: at most this much more can be wired for the GPU.
+                                let gpuWiredNow = monitor.gpuStats.inUseMemory
+                                let wiredAvail = limitBytes > gpuWiredNow ? limitBytes - gpuWiredNow : 0
+                                StatItem(label: "WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
                                 StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
                             } else {
                                 StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
