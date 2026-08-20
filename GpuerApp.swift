@@ -934,6 +934,102 @@ struct ColumnToggle: View {
     }
 }
 
+// Outline for a hovered span of the allocation bar: traces the bar's own
+// rounded outline between two x positions. Where a cut lands inside a corner
+// zone, only the covered part of the arc is drawn and the closing vertical
+// meets it at the exact chord, so tiny end caps and second-section partial
+// corners render correctly, including a second section becoming the end cap.
+struct SpanOutline: Shape {
+    var radius: CGFloat  // corner radius of the full bar outline
+    var x0: CGFloat      // span cut positions in the full outline's coordinates
+    var x1: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let r = min(radius, rect.height / 2)
+        let W = rect.width
+        let H = rect.height
+        let a = max(0, min(x0, W))
+        let b = max(a, min(x1, W))
+        // Top boundary height of the bar outline at x (corners dip by circle arc).
+        func topY(_ x: CGFloat) -> CGFloat {
+            if x < r { let d = r - x; return r - (max(0, r * r - d * d)).squareRoot() }
+            if x > W - r { let d = x - (W - r); return r - (max(0, r * r - d * d)).squareRoot() }
+            return 0
+        }
+        func ang(_ cx: CGFloat, _ cy: CGFloat, _ x: CGFloat, _ y: CGFloat) -> Angle {
+            .radians(Double(atan2(y - cy, x - cx)))
+        }
+        let flatExists = min(b, W - r) > max(a, r)
+        var p = Path()
+        p.move(to: CGPoint(x: a, y: topY(a)))
+        // Top edge, left to right
+        if a < r {
+            let e = min(b, r)
+            p.addArc(center: CGPoint(x: r, y: r), radius: r,
+                     startAngle: ang(r, r, a, topY(a)), endAngle: ang(r, r, e, topY(e)), clockwise: false)
+        }
+        if flatExists {
+            p.addLine(to: CGPoint(x: min(b, W - r), y: 0))
+        }
+        if b > W - r {
+            let s = max(a, W - r)
+            p.addArc(center: CGPoint(x: W - r, y: r), radius: r,
+                     startAngle: ang(W - r, r, s, topY(s)), endAngle: ang(W - r, r, b, topY(b)), clockwise: false)
+        }
+        // Right vertical (a chord when b lies inside a corner zone)
+        p.addLine(to: CGPoint(x: b, y: H - topY(b)))
+        // Bottom edge, right to left
+        if b > W - r {
+            let s = max(a, W - r)
+            p.addArc(center: CGPoint(x: W - r, y: H - r), radius: r,
+                     startAngle: ang(W - r, H - r, b, H - topY(b)), endAngle: ang(W - r, H - r, s, H - topY(s)), clockwise: false)
+        }
+        if flatExists {
+            p.addLine(to: CGPoint(x: max(a, r), y: H))
+        }
+        if a < r {
+            let e = min(b, r)
+            p.addArc(center: CGPoint(x: r, y: H - r), radius: r,
+                     startAngle: ang(r, H - r, e, H - topY(e)), endAngle: ang(r, H - r, a, H - topY(a)), clockwise: false)
+        }
+        p.closeSubpath()  // left vertical, likewise a chord inside a corner zone
+        return p
+    }
+}
+
+// Flow layout: places natural-width items left to right, wrapping to new
+// rows as the container narrows; no item is ever shrunken or clipped.
+struct FlowLayout: Layout {
+    var hSpacing: CGFloat = 14
+    var vSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, maxX: CGFloat = 0
+        for sub in subviews {
+            let sz = sub.sizeThatFits(.unspecified)
+            if x > 0 && x + sz.width > width { x = 0; y += rowH + vSpacing; rowH = 0 }
+            x += sz.width + hSpacing
+            rowH = max(rowH, sz.height)
+            maxX = max(maxX, x - hSpacing)
+        }
+        return CGSize(width: proposal.width ?? maxX, height: y + rowH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowH: CGFloat = 0
+        for sub in subviews {
+            let sz = sub.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + sz.width > bounds.maxX { x = bounds.minX; y += rowH + vSpacing; rowH = 0 }
+            sub.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+            x += sz.width + hSpacing
+            rowH = max(rowH, sz.height)
+        }
+    }
+}
+
 // Allocation-legend entry: swatch beside a label-over-value stack. The fixed
 // two-line shape is the standardized return; labels never wrap mid-phrase.
 struct LegendItem: View {
@@ -950,7 +1046,7 @@ struct LegendItem: View {
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .fixedSize()
                 Text(value)
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .lineLimit(1)
@@ -1248,6 +1344,9 @@ struct ContentView: View {
     @State private var showGPU = true
     @State private var showCPU = true
     @State private var showProcesses = true
+    // Allocation hover: keys of bar segments to outline, driven by the
+    // readout row and the legend. WIRED and AVAILABLE map to their groups.
+    @State private var hoveredAllocKeys: Set<String> = []
 
     // Two-layer compression restriction: the window can never shrink below the
     // top bar's fully compacted (tier-3) width, and never below the summed
@@ -1446,12 +1545,42 @@ struct ContentView: View {
 
                         // The five primary readouts head the card they caption; the chart
                         // and its cache-tier legend follow.
-                        HStack(spacing: 20) {
+                        HStack(spacing: 6) {
                             StatItem(label: "RESERVED", value: formatMemory(monitor.memoryStats.kernelOtherBytes), color: reservedBrown)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["reserved"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["reserved"] } else if hoveredAllocKeys == ["reserved"] { hoveredAllocKeys = [] } }
                             StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["app"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
                             StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: gpuPurple)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["gpuInUse", "wiredOther"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["gpuInUse", "wiredOther"] } else if hoveredAllocKeys == ["gpuInUse", "wiredOther"] { hoveredAllocKeys = [] } }
                             StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["compressed"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["compressed"] } else if hoveredAllocKeys == ["compressed"] { hoveredAllocKeys = [] } }
                             StatItem(label: "AVAILABLE", value: formatMemory(monitor.memoryStats.availableBytes), color: .secondary)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["purgeable", "speculative", "fileBacked", "unallocated"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["purgeable", "speculative", "fileBacked", "unallocated"] } else if hoveredAllocKeys == ["purgeable", "speculative", "fileBacked", "unallocated"] { hoveredAllocKeys = [] } }
                         }
 
                         let total = Double(max(monitor.memoryStats.totalBytes, 1))
@@ -1513,17 +1642,54 @@ struct ContentView: View {
                             .frame(height: 36)
                             .background(Color.primary.opacity(0.06))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
+                            // Hover outline: one border around the hovered span, drawn after
+                            // the clip so it is never shaved, expanded to sit outside the
+                            // sections, following the bar's corners at the ends.
+                            .overlay(alignment: .topLeading) {
+                                if !hoveredAllocKeys.isEmpty {
+                                    let lw: CGFloat = 1.5
+                                    let widths: [(String, CGFloat)] = [
+                                        ("reserved", max(0, w * CGFloat(kernelRemB / total))),
+                                        ("app", max(0, w * CGFloat(appUsed / total))),
+                                        ("gpuInUse", max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total))),
+                                        ("wiredOther", max(0, w * CGFloat(wiredOther / total))),
+                                        ("compressed", max(0, w * CGFloat(compUsed / total))),
+                                        ("purgeable", max(0, w * CGFloat(purgeableB / total))),
+                                        ("speculative", max(0, w * CGFloat(speculativeB / total))),
+                                        ("fileBacked", max(0, w * CGFloat(fileCacheB / total))),
+                                        ("unallocated", max(0, w * CGFloat(unallocatedB / total)))
+                                    ]
+                                    let startX = widths.prefix(while: { !hoveredAllocKeys.contains($0.0) }).reduce(CGFloat(0)) { $0 + $1.1 }
+                                    let spanW = widths.filter { hoveredAllocKeys.contains($0.0) }.reduce(CGFloat(0)) { $0 + $1.1 }
+                                    SpanOutline(radius: 6 + lw / 2, x0: startX, x1: startX + spanW + lw)
+                                        .stroke(Color.white, lineWidth: lw)
+                                        .frame(width: w + lw, height: 36 + lw)
+                                        .offset(x: -lw / 2, y: -lw / 2)
+                                }
+                            }
                         }
                         .frame(height: 36)
 
                         // Legend
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], alignment: .leading, spacing: 6) {
+                        FlowLayout(hSpacing: 14, vSpacing: 6) {
                             LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["gpuInUse"] } else if hoveredAllocKeys == ["gpuInUse"] { hoveredAllocKeys = [] } }
                             LegendItem(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["wiredOther"] } else if hoveredAllocKeys == ["wiredOther"] { hoveredAllocKeys = [] } }
                             LegendItem(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["purgeable"] } else if hoveredAllocKeys == ["purgeable"] { hoveredAllocKeys = [] } }
                             LegendItem(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["speculative"] } else if hoveredAllocKeys == ["speculative"] { hoveredAllocKeys = [] } }
                             LegendItem(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["fileBacked"] } else if hoveredAllocKeys == ["fileBacked"] { hoveredAllocKeys = [] } }
                             LegendItem(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["unallocated"] } else if hoveredAllocKeys == ["unallocated"] { hoveredAllocKeys = [] } }
                         }
                         .foregroundColor(.secondary)
 
