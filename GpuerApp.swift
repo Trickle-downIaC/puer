@@ -684,7 +684,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > mem.wiredBytes ? limitBytes - mem.wiredBytes : 0
-        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit (wired available \(gib(headroom)) GiB)\n"
+        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit (limit headroom \(gib(headroom)) GiB)\n"
     } else {
         out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
     }
@@ -1415,10 +1415,10 @@ struct ContentView: View {
                                 if monitor.wiredLimitMB > 0 {
                                     let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
                                     let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
-                                    StatItem(label: "WIRED AVAILABLE", value: formatMemory(wiredAvail), color: .secondary)
+                                    StatItem(label: "WIRED LIMIT HEADROOM", value: formatMemory(wiredAvail), color: .secondary)
                                     StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
                                 } else {
-                                    StatItem(label: "WIRED AVAILABLE", value: "n/a", color: .secondary)
+                                    StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
                                     StatItem(label: "WIRED LIMIT", value: "macOS default", color: .secondary)
                                 }
                             }
