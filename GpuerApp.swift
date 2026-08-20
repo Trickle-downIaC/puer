@@ -667,6 +667,14 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
     out += "used (strict): \(gib(mem.usedBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    // Reserved identified live: the firmware carveout the VM system never
+    // manages, declared by the kernel itself as memsize minus memsize_usable.
+    var usableMem: UInt64 = 0
+    var usableSz = MemoryLayout<UInt64>.size
+    sysctlbyname("hw.memsize_usable", &usableMem, &usableSz, nil, 0)
+    if usableMem > 0 && mem.totalBytes > usableMem {
+        out += "reserved cross-check: derived \(gib(mem.kernelOtherBytes)) GiB vs declared firmware carveout \(gib(mem.totalBytes - usableMem)) GiB (hw.memsize - hw.memsize_usable)\n"
+    }
     // Plain file cache: file-backed pages on the active/inactive queues. With
     // purgeable and speculative this reconstructs Activity Monitor's Cached
     // Files; in Puer's model all three live inside Available.
