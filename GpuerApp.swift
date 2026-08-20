@@ -1008,13 +1008,14 @@ struct SpanOutline: Shape {
                 p.addArc(center: CGPoint(x: a + q, y: H - q), radius: q,
                          startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
             }
-        } else {
-            if b > r { p.addLine(to: CGPoint(x: min(b, r) == r ? r : b, y: H)) }
-            if a < r {
-                let e = min(b, r)
-                p.addArc(center: CGPoint(x: r, y: H - r), radius: r,
-                         startAngle: ang(r, H - r, e, H - topY(e)), endAngle: ang(r, H - r, a, H - topY(a)), clockwise: false)
-            }
+        } else if a < r {
+            // Only a leading-zone left cut returns through the bottom-left arc; a
+            // span living entirely in the trailing corner zone skips this branch
+            // and closes with its own chord, instead of jumping to the far left.
+            if b > r { p.addLine(to: CGPoint(x: r, y: H)) }
+            let e = min(b, r)
+            p.addArc(center: CGPoint(x: r, y: H - r), radius: r,
+                     startAngle: ang(r, H - r, e, H - topY(e)), endAngle: ang(r, H - r, a, H - topY(a)), clockwise: false)
         }
         p.closeSubpath()  // left cut vertical
         return p
@@ -1088,28 +1089,16 @@ struct StatItem: View {
 struct RateCardView: View {
     let title: String
     let value: String
-    let subtitle: String
-    let icon: String
     let color: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .foregroundColor(color)
-                    .font(.system(size: 11))
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-            }
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
             Text(value)
                 .font(.system(size: 20, weight: .bold, design: .monospaced))
                 .foregroundColor(color)
-            if !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
@@ -1298,7 +1287,6 @@ struct StatusPill: View {
 // sparkline beneath, optional caption. Replaces the old unlabeled side-by-side charts.
 struct TrendRowView: View {
     let title: String
-    let current: String
     let caption: String?
     let data: [Double]
     let maxValue: Double?
@@ -1307,15 +1295,9 @@ struct TrendRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text(current)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(color)
-            }
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
             SparklineView(data: data, color: color, maxValue: maxValue,
                           showGrid: true, yQuarterLabel: yQuarterLabel)
                 .frame(height: 60)
@@ -1335,7 +1317,7 @@ struct ContentView: View {
     @State private var showMemory = true
     @State private var showGPU = true
     @State private var showCPU = true
-    @State private var showProcesses = true
+    @State private var showProcesses = false
     // Allocation hover: keys of bar segments to outline, driven by the
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
@@ -1400,8 +1382,8 @@ struct ContentView: View {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
         if showMemory { columns += 500 }
-        if showGPU { columns += 260 }
-        if showCPU { columns += 260 }
+        if showGPU { columns += 390 }
+        if showCPU { columns += 390 }
         if showProcesses { columns += 220 }
         return max(topBarMin, columns)
     }
@@ -1519,6 +1501,8 @@ struct ContentView: View {
                     // A dark plus-shaped hairline separates the quadrants, inset so it
                     // never quite reaches the bubble's edges.
                     VStack(alignment: .leading, spacing: 10) {
+                        Text("Overview")
+                            .font(.system(size: 13, weight: .semibold))
                         let usedLooseValue = formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes)
                         let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
                         let minAvailValue = formatMemory(UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac)))
@@ -1546,32 +1530,34 @@ struct ContentView: View {
                             }
                         }
                         .background(RoundedRectangle(cornerRadius: 8).fill(headroomColor.opacity(0.12)))
+                        // Memory trend directly under the readout it histories (GPU/CPU parity)
+                        VStack(alignment: .leading, spacing: 12) {
+                            TrendRowView(title: "USED, STRICT (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                         caption: nil,
+                                         data: monitor.memoryHistory,
+                                         maxValue: 1.0, color: headroomColor,
+                                         yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                        }
+                        .padding(12)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                         HStack(spacing: 12) {
                             headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
                             headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
                             headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
                         }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
-                    // Memory trend directly under the readout it histories (GPU/CPU parity)
-                    VStack(alignment: .leading, spacing: 12) {
-                        TrendRowView(title: "USED, STRICT (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
-                                     current: formatMemory(monitor.memoryStats.usedBytes),
-                                     caption: nil,
-                                     data: monitor.memoryHistory,
-                                     maxValue: 1.0, color: headroomColor,
-                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
-                    }
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Unified memory allocation")
+                        Text("Allocation details")
                             .font(.system(size: 13, weight: .semibold))
 
                         // The five primary readouts head the card they caption; the chart
@@ -1766,8 +1752,11 @@ struct ContentView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                     }
-                    .padding(12)
+                    .padding(16)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
@@ -1792,6 +1781,9 @@ struct ContentView: View {
                             StatItem(label: "OUT RATE", value: String(format: "%.1f MB/s", monitor.swapOutRateMBs), color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                         HStack(spacing: 12) {
                             StatItem(label: "LAST I/O", value: lastIO, color: swapIOActive ? .orange : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1800,8 +1792,11 @@ struct ContentView: View {
                             StatItem(label: "SESSION OUT", value: formatMemory(sessionOut), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                     }
-                    .padding(12)
+                    .padding(16)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
@@ -1818,75 +1813,90 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "GPU", icon: "cube.transparent")
 
-                    RateCardView(
-                        title: "GPU UTILIZATION",
-                        value: "\(monitor.gpuStats.deviceUtilization)%",
-                        subtitle: "Renderer \(monitor.gpuStats.rendererUtilization)% \u{2022} Tiler \(monitor.gpuStats.tilerUtilization)%",
-                        icon: "cube.transparent",
-                        color: gpuPurple
-                    )
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        TrendRowView(title: "GPU UTILIZATION (%, last 5 min)",
-                                     current: "\(monitor.gpuStats.deviceUtilization)%",
-                                     caption: nil,
-                                     data: monitor.gpuHistory.map { Double($0) },
-                                     maxValue: 100.0, color: gpuPurple,
-                                     yQuarterLabel: { f in "\(Int(f * 100))" })
+                    // Overview: the utilization readout with its history nested beneath.
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Overview")
+                            .font(.system(size: 13, weight: .semibold))
+                        RateCardView(
+                            title: "GPU UTILIZATION",
+                            value: "\(monitor.gpuStats.deviceUtilization)%",
+                            color: gpuPurple
+                        )
+                        VStack(alignment: .leading, spacing: 12) {
+                            TrendRowView(title: "GPU UTILIZATION (%, last 5 min)",
+                                         caption: nil,
+                                         data: monitor.gpuHistory.map { Double($0) },
+                                         maxValue: 100.0, color: gpuPurple,
+                                         yQuarterLabel: { f in "\(Int(f * 100))" })
+                        }
+                        .padding(12)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
+                        HStack(spacing: 12) {
+                            StatItem(label: "RENDERER", value: "\(monitor.gpuStats.rendererUtilization)%", color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "TILER", value: "\(monitor.gpuStats.tilerUtilization)%", color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                     }
-                    .padding(12)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
-                    // Memory claims on the unified pool, from the GPU's perspective
+                    // Memory claims: the GPU's claims on the unified pool; readouts in
+                    // their own nested card above the claim histories.
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Memory claims")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                         HStack(spacing: 16) {
                             StatItem(label: "GPU MEM IN-USE", value: formatMemory(monitor.gpuStats.inUseMemory), color: gpuPurple)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             StatItem(label: "GPU MEM MAPPED", value: formatMemory(monitor.gpuStats.allocatedMemory), color: gpuPurpleDark)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
+                        VStack(alignment: .leading, spacing: 12) {
+                            // IN-USE is resident, resident is wired, and wired is capped, so the
+                            // wired limit is this chart's true ceiling (fallback: total if unset).
+                            let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : monitor.memoryStats.totalBytes
+                            let inUseCapFrac = Double(inUseCapBytes) / Double(monitor.memoryStats.totalBytes)
+                            let inUseCapGB = Double(inUseCapBytes) / 1_073_741_824
+                            TrendRowView(title: monitor.wiredLimitMB > 0
+                                            ? "GPU MEMORY IN-USE (of \(formatMemory(inUseCapBytes)) wired limit)"
+                                            : "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                         caption: nil,
+                                         data: monitor.gpuMemHistory,
+                                         maxValue: inUseCapFrac, color: gpuPurple,
+                                         yQuarterLabel: { f in String(format: "%.0fG", f * inUseCapGB) })
+                            // MAPPED is reservation, not residency: file-backed mappings are not
+                            // wired, so the limit does not bound it and mapped can even exceed
+                            // total. Total is the largest honest denominator; clamp pins overflow
+                            // at the ceiling rather than drawing past the axis.
+                            TrendRowView(title: "GPU MEMORY MAPPED (of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                         caption: nil,
+                                         data: monitor.gpuMappedHistory.map { min($0, 1.0) },
+                                         maxValue: 1.0, color: gpuPurpleDark,
+                                         yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                        }
+                        .padding(12)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                     }
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
-
-                    // Trends
-                    VStack(alignment: .leading, spacing: 12) {
-                        // IN-USE is resident, resident is wired, and wired is capped, so the
-                        // wired limit is this chart's true ceiling (fallback: total if unset).
-                        let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : monitor.memoryStats.totalBytes
-                        let inUseCapFrac = Double(inUseCapBytes) / Double(monitor.memoryStats.totalBytes)
-                        let inUseCapGB = Double(inUseCapBytes) / 1_073_741_824
-                        TrendRowView(title: monitor.wiredLimitMB > 0
-                                        ? "GPU MEMORY IN-USE (of \(formatMemory(inUseCapBytes)) wired limit)"
-                                        : "GPU MEMORY IN-USE (of \(formatMemory(monitor.memoryStats.totalBytes)))",
-                                     current: formatMemory(monitor.gpuStats.inUseMemory),
-                                     caption: nil,
-                                     data: monitor.gpuMemHistory,
-                                     maxValue: inUseCapFrac, color: gpuPurple,
-                                     yQuarterLabel: { f in String(format: "%.0fG", f * inUseCapGB) })
-                        // MAPPED is reservation, not residency: file-backed mappings are not
-                        // wired, so the limit does not bound it and mapped can even exceed
-                        // total. Total is the largest honest denominator; clamp pins overflow
-                        // at the ceiling rather than drawing past the axis.
-                        TrendRowView(title: "GPU MEMORY MAPPED (of \(formatMemory(monitor.memoryStats.totalBytes)))",
-                                     current: formatMemory(monitor.gpuStats.allocatedMemory),
-                                     caption: nil,
-                                     data: monitor.gpuMappedHistory.map { min($0, 1.0) },
-                                     maxValue: 1.0, color: gpuPurpleDark,
-                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
-                    }
-                    .padding(12)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
                 }
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 260, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 390, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showCPU {
@@ -1895,57 +1905,66 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "CPU", icon: "cpu")
 
-                    RateCardView(
-                        title: "CPU UTILIZATION",
-                        value: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
-                        subtitle: "P-cores \(Int((monitor.cpuStats.performance * 100).rounded()))% \u{2022} E-cores \(Int((monitor.cpuStats.efficiency * 100).rounded()))%",
-                        icon: "cpu",
-                        color: .blue
-                    )
-
-                    // CPU history, directly under the utilization readout (GPU layout parity)
-                    VStack(alignment: .leading, spacing: 8) {
-                        TrendRowView(title: "CPU UTILIZATION (%, last 5 min)",
-                                     current: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
-                                     caption: nil,
-                                     data: monitor.cpuHistory.map { $0 * 100 },
-                                     maxValue: 100.0, color: .blue,
-                                     yQuarterLabel: { f in "\(Int(f * 100))" })
-                    }
-                    .padding(10)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
-
-                    // Cluster loads
+                    // Overview: the whole CPU story in one organizational card.
                     VStack(alignment: .leading, spacing: 10) {
-                        CoreLoadRow(label: "Performance", usage: monitor.cpuStats.performance,
-                                    count: monitor.cpuStats.performanceCoreCount, color: .blue)
-                        CoreLoadRow(label: "Efficiency", usage: monitor.cpuStats.efficiency,
-                                    count: monitor.cpuStats.efficiencyCoreCount, color: .teal)
-                    }
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
-
-                    // Per-core bars
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Per-core load")
-                            .font(.system(size: 12, weight: .semibold))
-                        PerCoreBarsView(perCore: monitor.cpuStats.perCore,
-                                        efficiencyCount: monitor.cpuStats.efficiencyCoreCount)
-                        HStack(spacing: 14) {
-                            HStack(spacing: 4) {
-                                RoundedRectangle(cornerRadius: 2).fill(.teal).frame(width: 10, height: 10)
-                                Text("Efficiency").font(.system(size: 10))
-                            }
-                            HStack(spacing: 4) {
-                                RoundedRectangle(cornerRadius: 2).fill(.blue).frame(width: 10, height: 10)
-                                Text("Performance").font(.system(size: 10))
-                            }
+                        Text("Overview")
+                            .font(.system(size: 13, weight: .semibold))
+                        RateCardView(
+                            title: "CPU UTILIZATION",
+                            value: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
+                            color: .blue
+                        )
+                        VStack(alignment: .leading, spacing: 8) {
+                            TrendRowView(title: "CPU UTILIZATION (%, last 5 min)",
+                                         caption: nil,
+                                         data: monitor.cpuHistory.map { $0 * 100 },
+                                         maxValue: 100.0, color: .blue,
+                                         yQuarterLabel: { f in "\(Int(f * 100))" })
                         }
-                        .foregroundColor(.secondary)
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
+                        HStack(spacing: 12) {
+                            StatItem(label: "P-CORES", value: "\(Int((monitor.cpuStats.performance * 100).rounded()))%", color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            StatItem(label: "E-CORES", value: "\(Int((monitor.cpuStats.efficiency * 100).rounded()))%", color: .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
+                        VStack(alignment: .leading, spacing: 10) {
+                            CoreLoadRow(label: "Performance", usage: monitor.cpuStats.performance,
+                                        count: monitor.cpuStats.performanceCoreCount, color: .blue)
+                            CoreLoadRow(label: "Efficiency", usage: monitor.cpuStats.efficiency,
+                                        count: monitor.cpuStats.efficiencyCoreCount, color: .teal)
+                        }
+                        .padding(12)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Per-core load")
+                                .font(.system(size: 12, weight: .semibold))
+                            PerCoreBarsView(perCore: monitor.cpuStats.perCore,
+                                            efficiencyCount: monitor.cpuStats.efficiencyCoreCount)
+                            HStack(spacing: 14) {
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.teal).frame(width: 10, height: 10)
+                                    Text("Efficiency").font(.system(size: 10))
+                                }
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.blue).frame(width: 10, height: 10)
+                                    Text("Performance").font(.system(size: 10))
+                                }
+                            }
+                            .foregroundColor(.secondary)
+                        }
+                        .padding(12)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                     }
-                    .padding(12)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
@@ -1953,7 +1972,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 260, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 390, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showProcesses {
