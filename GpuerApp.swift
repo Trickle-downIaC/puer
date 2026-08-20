@@ -684,7 +684,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
-        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB limit; gpu limit headroom at most \(gib(headroom)) GiB (limit caps gpu wiring only)\n"
+        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB gpu wired limit; headroom at most \(gib(headroom)) GiB (limit caps gpu wiring only)\n"
     } else {
         out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
     }
@@ -1419,11 +1419,11 @@ struct ContentView: View {
                                 // bound: at most this much more can be wired for the GPU.
                                 let gpuWiredNow = monitor.gpuStats.inUseMemory
                                 let wiredAvail = limitBytes > gpuWiredNow ? limitBytes - gpuWiredNow : 0
-                                StatItem(label: "WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
-                                StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
+                                StatItem(label: "GPU WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
                             } else {
-                                StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
-                                StatItem(label: "WIRED LIMIT", value: "macOS default", color: .secondary)
+                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
+                                StatItem(label: "GPU WIRED LIMIT", value: "macOS default", color: .secondary)
                             }
                             StatItem(label: "PRESSURE", value: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
                                      color: monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary)
@@ -1519,7 +1519,7 @@ struct ContentView: View {
                         // Legend
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], alignment: .leading, spacing: 6) {
                             LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
-                            LegendItem(color: gpuPurpleDark, label: "Wired - Other", value: formatMemory(UInt64(wiredOther)))
+                            LegendItem(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)))
                             LegendItem(color: .gray.opacity(0.42), label: "Purgeable Cache", value: formatMemory(UInt64(purgeableB)))
                             LegendItem(color: .gray.opacity(0.32), label: "Speculative Cache", value: formatMemory(UInt64(speculativeB)))
                             LegendItem(color: .gray.opacity(0.22), label: "File Cache", value: formatMemory(UInt64(fileCacheB)))
