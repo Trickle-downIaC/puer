@@ -49,7 +49,7 @@ All system stats come from public interfaces and shelling out to CLI tools — n
 
 ## Key domain concept
 
-On Apple Silicon there is no separate VRAM — CPU and GPU share one unified memory pool. The UI models this as a single bar (GPU active / GPU mapped-idle / apps & OS / available) rather than pretending the GPU has its own memory. "GPU mapped" can be tens of GB on machines running local LLMs because model weights are memory-mapped for GPU access; this is the usual explanation for very high "wired" memory. The unified-pool bar caps GPU-mapped at current wired memory (GPU allocations are wired), so segments never exceed 100% and idle-released models are not misattributed.
+On Apple Silicon there is no separate VRAM: CPU and GPU share one unified memory pool. The allocation bar is an exact partition of physical memory built only from kernel and driver counters: kernel remainder (pages in no named queue), app (internal minus purgeable, Activity Monitor's definition), wired shown as GPU In-Use plus everything-else-pinned, compressed, then the reclaimable tiers of available (purgeable cache, speculative cache, file cache, unallocated). A finer GPU-vs-OS split within wired is not publicly measurable and is deliberately not guessed. The driver's "mapped" figure counts address space, can exceed wired or even total, and is shown in the GPU column as a driver claim, not as a bar segment.
 
 ## Conventions
 

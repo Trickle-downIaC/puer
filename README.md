@@ -9,7 +9,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 
 ## Features
 
-- **"Used" memory headline** (available beneath it) over a breakdown grid: app memory with its cache and active total, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
+- **"Used" memory headline** (available beneath it) over a breakdown grid: app memory (Activity Monitor's internal-minus-purgeable definition) with its purgeable and speculative caches, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than displaying as if the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
 - **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
@@ -61,7 +61,7 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 
 - GPU stats are Apple-Silicon-specific. The current implementation depends on `AGXAccelerator`, so non-AGX Macs may show `Unknown` and zeroed GPU values.
 - Pressure events and history only cover the window since the app launched.
-- The unified pool bar shows GPU-mapped, Non-GPU used, and Available as non-overlapping segments, but the GPU/non-GPU boundary is an approximation: GPU allocations live inside the wired category, so the bar caps the GPU segment at current wired memory. The Available segment is always exact.
+- The unified pool bar is an exact partition of physical memory built from kernel and driver counters. Wired is shown as GPU In-Use plus everything-else-pinned; a finer GPU-vs-OS split within wired is not publicly measurable and is deliberately not guessed.
 - The `ioreg` parsing is text-based, so future macOS formatting changes could break some fields.
 - Process aggregation by binary name can merge unrelated processes with the same executable name.
 
