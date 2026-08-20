@@ -662,7 +662,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
-    out += "used: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    out += "hard allocated: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
     // Plain file cache: file-backed pages on the active/inactive queues. With
     // purgeable and speculative this reconstructs Activity Monitor's Cached
     // Files; in Puer's model all three live inside Available.
@@ -674,7 +674,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
     // "Memory Used" counts purgeable cache and the reserved carveout in Used,
     // which is why it reads above ours and overlaps its own Cached Files.
-    out += "am-style used (empirical: app + purgeable + wired + compressed + reserved): \(gib(mem.appBytes + mem.purgeableBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
+    out += "used (activity monitor style; empirical: app + purgeable + wired + compressed + reserved): \(gib(mem.appBytes + mem.purgeableBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
@@ -702,7 +702,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "overall: \(pct(cpu.overall)), P-cores: \(pct(cpu.performance)), E-cores: \(pct(cpu.efficiency))\n"
     out += "per-core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ","))\n"
     out += "\n[HISTORY ~5min, 2s samples, oldest->newest, values are %]\n"
-    out += "memory used: \(seriesSummary(monitor.memoryHistory))\n"
+    out += "hard allocated: \(seriesSummary(monitor.memoryHistory))\n"
     out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
     let peakUsedFrac = monitor.memoryHistory.max() ?? 0
     out += "minimum available seen: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB (lowest point in window)\n"
@@ -1370,19 +1370,24 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Unified Memory", icon: "memorychip")
 
-                    // HEADLINE: Used memory (available on the line beneath)
+                    // HEADLINE: Hard Allocated, the strict bottom-up sum (app + wired +
+                    // compressed) that excludes reclaimable cache; an Activity Monitor
+                    // style Used is shown beneath for terminology parity.
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(String(format: "%.1f", Double(monitor.memoryStats.usedBytes) / 1_073_741_824))
                                 .font(.system(size: 48, weight: .bold, design: .rounded))
                                 .foregroundColor(headroomColor)
-                            Text("GB Used")
+                            Text("GB Hard Allocated")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundColor(headroomColor.opacity(0.8))
                         }
                         Text("\(formatMemory(monitor.memoryStats.availableBytes)) available of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
+                        Text("Used (Activity Monitor style): \(formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes))")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary.opacity(0.8))
                         Divider()
                             .padding(.vertical, 2)
                         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
@@ -1557,7 +1562,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
                         let minAvailBytes = UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac))
-                        TrendRowView(title: "MEMORY USED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                        TrendRowView(title: "HARD ALLOCATED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.memoryStats.usedBytes),
                                      caption: "Minimum available memory seen: \(formatMemory(minAvailBytes))",
                                      data: monitor.memoryHistory,

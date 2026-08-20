@@ -9,7 +9,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 
 ## Features
 
-- **"Used" memory headline** (available beneath it) over a breakdown grid: app memory (Activity Monitor's internal-minus-purgeable definition) with its purgeable and speculative caches, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
+- **"Hard Allocated" headline** (available and an Activity Monitor style Used beneath it) over a breakdown grid: app memory (Activity Monitor's internal-minus-purgeable definition) with its purgeable and speculative caches, wired memory against the `iogpu.wired_limit_mb` limit with remaining headroom, and compressed memory beside the live kernel pressure verdict and last-event clock
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than displaying as if the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
 - **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
