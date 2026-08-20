@@ -28,7 +28,7 @@ struct MemoryStats {
 
     var usedFraction: Double { Double(usedBytes) / Double(max(totalBytes, 1)) }
     var freeFraction: Double { Double(freeBytes) / Double(max(totalBytes, 1)) }
-    var availableBytes: UInt64 { totalBytes - usedBytes }  // everything OS can reclaim
+    var availableBytes: UInt64 { totalBytes - usedBytes }  // exactly the four reclaimable tiers: purgeable + speculative + file-backed + unallocated
     var availableFraction: Double { Double(availableBytes) / Double(max(totalBytes, 1)) }
 }
 
@@ -162,15 +162,19 @@ func readMemoryStats() -> MemoryStats {
     // App memory per Activity Monitor's definition: internal (anonymous) pages
     // minus purgeable. The upstream code used active - purgeable, which wrongly
     // counts recently-touched file cache as app memory and misses quiet app
-    // heap on the inactive queue. Used remains the transparent bottom-up sum
-    // app + wired + compressed; Activity Monitor's own "Memory Used" adds an
-    // undocumented, version-drifting remainder on top and will read higher.
+    // heap on the inactive queue. Used (Strict) is the bottom-up sum of every
+    // tier no reclaim can touch: reserved + app + wired + compressed. Reserved
+    // belongs in it because boot-carveout pages are strictly spoken for and
+    // available to nothing; leaving it out silently parked it inside Available,
+    // overstating that readout by the reserve. Used (Loose) is then exactly
+    // Strict + purgeable (the empirical fit to Activity Monitor's Memory Used),
+    // and Available is exactly the four reclaimable tiers.
     let appMem = internalMem > purgeable ? internalMem - purgeable : 0
     // Pages in no named queue: kernel allocations outside the wire count.
     // This is the bucket Activity Monitor folds into its "Memory Used".
     let named = freeCount + active + inactive + speculative + wired + compressed + throttled
     let kernelOther = total > named ? total - named : 0
-    let usedApprox = appMem + wired + compressed
+    let usedApprox = kernelOther + appMem + wired + compressed
     let swap = getSwapUsage()
     let pressure = getMemoryPressure()
 
@@ -662,7 +666,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
-    out += "used (strict): \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    out += "used (strict): \(gib(mem.usedBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
     // Plain file cache: file-backed pages on the active/inactive queues. With
     // purgeable and speculative this reconstructs Activity Monitor's Cached
     // Files; in Puer's model all three live inside Available.
@@ -674,7 +678,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
     // "Memory Used" counts purgeable cache and the reserved carveout in Used,
     // which is why it reads above ours and overlaps its own Cached Files.
-    out += "used (loose / activity monitor; empirical: app + purgeable + wired + compressed + reserved): \(gib(mem.appBytes + mem.purgeableBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
+    out += "used (loose / activity monitor; empirical: strict + purgeable): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
@@ -1244,30 +1248,6 @@ struct StatusPill: View {
 // The app cannot see events from before its own launch; residue is labeled as such.
 // A labeled full-width trend row: metric name (with units), current value inline,
 // sparkline beneath, optional caption. Replaces the old unlabeled side-by-side charts.
-struct TrendRowView: View {
-    let title: String
-    let caption: String?
-    let data: [Double]
-    let maxValue: Double?
-    let color: Color
-    let yQuarterLabel: ((Double) -> String)?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-            SparklineView(data: data, color: color, maxValue: maxValue,
-                          showGrid: true, yQuarterLabel: yQuarterLabel)
-                .frame(height: 60)
-            if let caption = caption {
-                Text(caption)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-}
 
 struct ContentView: View {
     @ObservedObject var monitor: SystemMonitor
@@ -1312,8 +1292,11 @@ struct ContentView: View {
     // Bubble quadrant cells: primary (large colored value) and secondary
     // (standard stat), equal-width so the plus hairline's center is the
     // true column boundary.
+    // Quadrant cells double as hover sources: hovering any of the four value
+    // definitions lights its constituent segments in the allocation chart, so
+    // the construction of every headline number is inspectable on sight.
     @ViewBuilder
-    private func bubblePrimary(_ label: String, _ value: String, _ color: Color) -> some View {
+    private func bubblePrimary(_ label: String, _ value: String, _ color: Color, keys: Set<String>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.system(size: 10, weight: .semibold))
@@ -1327,15 +1310,21 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.08 : 0)))
+        .contentShape(Rectangle())
+        .onHover { h in if h { hoveredAllocKeys = keys } else if hoveredAllocKeys == keys { hoveredAllocKeys = [] } }
     }
 
     @ViewBuilder
-    private func bubbleSecondary(_ label: String, _ value: String) -> some View {
+    private func bubbleSecondary(_ label: String, _ value: String, keys: Set<String>) -> some View {
         StatItem(label: label, value: value, color: .secondary)
             .fixedSize()
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.08 : 0)))
+        .contentShape(Rectangle())
+        .onHover { h in if h { hoveredAllocKeys = keys } else if hoveredAllocKeys == keys { hoveredAllocKeys = [] } }
     }
 
     // Legend chip: a LegendItem in the same hoverable-bubble chrome as the
@@ -1482,47 +1471,76 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Overview")
                             .font(.system(size: 13, weight: .semibold))
-                        let usedLooseValue = formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes)
+                        let usedLooseValue = formatMemory(monitor.memoryStats.usedBytes + monitor.memoryStats.purgeableBytes)
                         let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
                         let minAvailValue = formatMemory(UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac)))
-                        let pressureColor: Color = monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary
+                        let pressureColor: Color = monitor.memoryStats.kernelPressureLevel > 2 ? .red : (monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .green)
                         let lastPressure = monitor.lastPressureEvent.map { d -> String in
                             let m = Int(Date().timeIntervalSince(d) / 60)
                             return m < 1 ? "<1 min ago" : "\(m) min ago"
                         } ?? "-"
                         let lastPressureColor: Color = monitor.lastPressureEvent != nil ? .orange : .secondary
-                        VStack(spacing: 0) {
-                            HStack(spacing: 0) {
-                                bubblePrimary("USED (STRICT)", formatMemory(monitor.memoryStats.usedBytes), headroomColor)
-                                bubbleSecondary("USED (LOOSE)", usedLooseValue)
+                        VStack(alignment: .leading, spacing: 4) {
+                            VStack(spacing: 0) {
+                                HStack(spacing: 0) {
+                                    bubblePrimary("USED (STRICT)", formatMemory(monitor.memoryStats.usedBytes), headroomColor,
+                                                  keys: ["reserved", "app", "gpuInUse", "wiredOther", "compressed"])
+                                    bubbleSecondary("USED (LOOSE)", usedLooseValue,
+                                                    keys: ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable"])
+                                }
+                                HStack(spacing: 0) {
+                                    bubblePrimary("AVAILABLE", formatMemory(monitor.memoryStats.availableBytes), headroomColor,
+                                                  keys: ["purgeable", "speculative", "fileBacked", "unallocated"])
+                                    bubbleSecondary("TOTAL", formatMemory(monitor.memoryStats.totalBytes),
+                                                    keys: ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable", "speculative", "fileBacked", "unallocated"])
+                                }
                             }
-                            HStack(spacing: 0) {
-                                bubblePrimary("AVAILABLE", formatMemory(monitor.memoryStats.availableBytes), headroomColor)
-                                bubbleSecondary("TOTAL", formatMemory(monitor.memoryStats.totalBytes))
+                            .frame(maxWidth: .infinity)
+                            .overlay {
+                                ZStack {
+                                    Rectangle().fill(Color.black.opacity(0.4)).frame(width: 1).padding(.vertical, 8)
+                                    Rectangle().fill(Color.black.opacity(0.4)).frame(height: 1).padding(.horizontal, 10)
+                                }
+                                .allowsHitTesting(false)
                             }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .overlay {
-                            ZStack {
-                                Rectangle().fill(Color.black.opacity(0.4)).frame(width: 1).padding(.vertical, 8)
-                                Rectangle().fill(Color.black.opacity(0.4)).frame(height: 1).padding(.horizontal, 10)
+                            // Identity strip: names which of the four numbers the history
+                            // plots, and carries the series' own derived low-water mark.
+                            HStack {
+                                Text("USED (STRICT) \u{00B7} LAST 5 MIN")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("AVAIL. LOW: \(minAvailValue)")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundColor(.secondary)
                             }
+                            .padding(.horizontal, 12)
+                            .padding(.top, 2)
+                            SparklineView(data: monitor.memoryHistory, color: headroomColor, maxValue: 1.0,
+                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                                .frame(height: 60)
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, 10)
                         }
                         .background(RoundedRectangle(cornerRadius: 8).fill(headroomColor.opacity(0.12)))
-                        // Memory trend directly under the readout it histories (GPU/CPU parity)
-                        VStack(alignment: .leading, spacing: 12) {
-                            TrendRowView(title: "USED, STRICT (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
-                                         caption: nil,
-                                         data: monitor.memoryHistory,
-                                         maxValue: 1.0, color: headroomColor,
-                                         yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
-                        }
-                        .padding(12)
-                        .background(Color.primary.opacity(0.05))
-                        .cornerRadius(8)
+                        // Status card: the kernel's verdict as a power-mode-style pill,
+                        // green when the reclaim economy is healthy.
                         HStack(spacing: 12) {
-                            headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
-                            headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("PRESSURE")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                HStack(spacing: 5) {
+                                    Circle().fill(pressureColor).frame(width: 6, height: 6)
+                                    Text(kernelPressureName(monitor.memoryStats.kernelPressureLevel))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(pressureColor)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(pressureColor.opacity(0.15)))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
                         }
                         .padding(10)
