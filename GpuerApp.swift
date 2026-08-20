@@ -1149,7 +1149,7 @@ struct PerCoreBarsView: View {
 }
 
 // Fixed three-column layout: memory (500) + CPU (360) + processes (320) + 2 dividers.
-let windowWidth: CGFloat = 1420
+let windowWidth: CGFloat = 1520  // exactly the four columns' ideal widths, so launch seats every column at its ideal
 let windowHeight: CGFloat = 720
 
 // GPU family: two solid shades on one royal-violet ladder; every GPU element
@@ -1652,7 +1652,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 260, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 260, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showCPU {
@@ -1719,7 +1719,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 260, idealWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 260, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showProcesses {
