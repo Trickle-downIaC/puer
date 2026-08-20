@@ -1103,6 +1103,10 @@ let windowHeight: CGFloat = 720
 let gpuPurple = Color(red: 0.78, green: 0.42, blue: 1.00)
 // Secondary (one step darker): mapped/idle claims; solid so text stays readable.
 let gpuPurpleDark = Color(red: 0.58, green: 0.30, blue: 0.88)
+// OS Wired: one more step down the same ladder, marking it as part of the
+// wired family beside the GPU claims. Mostly kernel and driver pinned pages
+// (a sliver can be userland mlock, so "OS" is shorthand, not a census).
+let wiredOSPurple = Color(red: 0.40, green: 0.20, blue: 0.74)
 // Process-list accent: dark red. (SwiftUI's .pink renders as a red on macOS;
 // named for what it looks like, not the API token.)
 let processRed = Color.pink
@@ -1427,27 +1431,36 @@ struct ContentView: View {
                         // misattributed to the GPU when the driver reports large mappings while
                         // Metal's residency set has been released (idle models).
                         let gpuShown = min(gpuAlloc, Double(monitor.memoryStats.wiredBytes))
-                        let otherUsed = max(0, total - gpuShown - available)
+                        // The non-GPU remainder decomposes exactly: used is defined as
+                        // APP + WIRED + COMPRESSED, so used minus the GPU claim is
+                        // APP + COMPRESSED + (wired the OS has pinned beyond the GPU).
+                        let appUsed = Double(monitor.memoryStats.appBytes)
+                        let compUsed = Double(monitor.memoryStats.compressedBytes)
+                        let osWired = max(0, Double(monitor.memoryStats.wiredBytes) - gpuShown)
 
                         // Thick unified bar
                         GeometryReader { geo in
                             let w = geo.size.width
                             HStack(spacing: 0) {
-                                // GPU in-use (the GPU family color, matching WIRED)
+                                // Segment order mirrors the breakdown grid: App, then the wired
+                                // family (GPU In-Use, GPU Mapped, OS / Other Wired on one purple ladder),
+                                // then Compressed. The GPU/OS Wired boundary inherits the
+                                // mapped-vs-resident approximation.
+                                Rectangle()
+                                    .fill(Color.blue.opacity(0.6))
+                                    .frame(width: max(0, w * CGFloat(appUsed / total)))
                                 Rectangle()
                                     .fill(gpuPurple)
                                     .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
-                                // GPU mapped idle: the one derived shade, used only in this chart
                                 Rectangle()
                                     .fill(gpuPurpleDark)
                                     .frame(width: max(0, w * CGFloat(max(0, gpuShown - gpuActive) / total)))
-                                // Other used (blue). Color rule: the pool has two claim poles,
-                                // purple for GPU-pinned memory, blue for the CPU side, and APP is
-                                // software running CPU-side, so it shares blue. Dark red stays a local
-                                // accent for the process list only.
                                 Rectangle()
-                                    .fill(Color.blue.opacity(0.6))
-                                    .frame(width: max(0, w * CGFloat(otherUsed / total)))
+                                    .fill(wiredOSPurple)
+                                    .frame(width: max(0, w * CGFloat(osWired / total)))
+                                Rectangle()
+                                    .fill(Color.orange.opacity(0.6))
+                                    .frame(width: max(0, w * CGFloat(compUsed / total)))
                                 // Available (empty space)
                                 Spacer(minLength: 0)
                             }
@@ -1461,20 +1474,30 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 14) {
                                 HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.blue.opacity(0.6)).frame(width: 10, height: 10)
+                                    Text("App \(formatMemory(UInt64(appUsed)))")
+                                        .font(.system(size: 10))
+                                }
+                                HStack(spacing: 4) {
                                     RoundedRectangle(cornerRadius: 2).fill(gpuPurple).frame(width: 10, height: 10)
-                                    Text("GPU in-use \(formatMemory(monitor.gpuStats.inUseMemory))")
+                                    Text("GPU In-Use \(formatMemory(monitor.gpuStats.inUseMemory))")
                                         .font(.system(size: 10))
                                 }
                                 HStack(spacing: 4) {
                                     RoundedRectangle(cornerRadius: 2).fill(gpuPurpleDark).frame(width: 10, height: 10)
-                                    Text("GPU mapped \(formatMemory(monitor.gpuStats.allocatedMemory))")
+                                    Text("GPU Mapped \(formatMemory(monitor.gpuStats.allocatedMemory))")
                                         .font(.system(size: 10))
                                 }
                             }
                             HStack(spacing: 14) {
                                 HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.blue.opacity(0.6)).frame(width: 10, height: 10)
-                                    Text("Non-GPU used \(formatMemory(UInt64(otherUsed)))")
+                                    RoundedRectangle(cornerRadius: 2).fill(wiredOSPurple).frame(width: 10, height: 10)
+                                    Text("OS / Other Wired \(formatMemory(UInt64(osWired)))")
+                                        .font(.system(size: 10))
+                                }
+                                HStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2).fill(.orange.opacity(0.6)).frame(width: 10, height: 10)
+                                    Text("Compressed \(formatMemory(UInt64(compUsed)))")
                                         .font(.system(size: 10))
                                 }
                                 HStack(spacing: 4) {
