@@ -935,10 +935,10 @@ struct ColumnToggle: View {
 }
 
 // Outline for a hovered span of the allocation bar: traces the bar's own
-// rounded outline between two x positions. Where a cut lands inside a corner
-// zone, only the covered part of the arc is drawn and the closing vertical
-// meets it at the exact chord, so tiny end caps and second-section partial
-// corners render correctly, including a second section becoming the end cap.
+// rounded outline between two x cuts. Cut edges landing in the flat zone get
+// a slight rounding (cutRadius); the section's sharp corner overlaps the
+// rounded outline corner by under a point, accepted as the softer look. Cuts
+// inside a bar-corner zone stay exact chords against the partial arc.
 struct SpanOutline: Shape {
     var radius: CGFloat  // corner radius of the full bar outline
     var x0: CGFloat      // span cut positions in the full outline's coordinates
@@ -950,7 +950,7 @@ struct SpanOutline: Shape {
         let H = rect.height
         let a = max(0, min(x0, W))
         let b = max(a, min(x1, W))
-        // Top boundary height of the bar outline at x (corners dip by circle arc).
+        let q = max(0, min(2.0, (b - a) / 2, H / 2))  // cut-corner rounding, clamped for skinny spans
         func topY(_ x: CGFloat) -> CGFloat {
             if x < r { let d = r - x; return r - (max(0, r * r - d * d)).squareRoot() }
             if x > W - r { let d = x - (W - r); return r - (max(0, r * r - d * d)).squareRoot() }
@@ -959,40 +959,64 @@ struct SpanOutline: Shape {
         func ang(_ cx: CGFloat, _ cy: CGFloat, _ x: CGFloat, _ y: CGFloat) -> Angle {
             .radians(Double(atan2(y - cy, x - cx)))
         }
-        let flatExists = min(b, W - r) > max(a, r)
+        let aFlat = a >= r && a <= W - r
+        let bFlat = b >= r && b <= W - r
         var p = Path()
-        p.move(to: CGPoint(x: a, y: topY(a)))
-        // Top edge, left to right
-        if a < r {
-            let e = min(b, r)
-            p.addArc(center: CGPoint(x: r, y: r), radius: r,
-                     startAngle: ang(r, r, a, topY(a)), endAngle: ang(r, r, e, topY(e)), clockwise: false)
+        // Left cut, top side
+        if aFlat && q > 0 {
+            p.move(to: CGPoint(x: a, y: q))
+            p.addArc(center: CGPoint(x: a + q, y: q), radius: q,
+                     startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+        } else {
+            p.move(to: CGPoint(x: a, y: topY(a)))
+            if a < r {
+                let e = min(b, r)
+                p.addArc(center: CGPoint(x: r, y: r), radius: r,
+                         startAngle: ang(r, r, a, topY(a)), endAngle: ang(r, r, e, topY(e)), clockwise: false)
+            }
         }
-        if flatExists {
-            p.addLine(to: CGPoint(x: min(b, W - r), y: 0))
-        }
-        if b > W - r {
+        // Top edge to the right cut
+        if bFlat {
+            p.addLine(to: CGPoint(x: b - q, y: 0))
+            if q > 0 {
+                p.addArc(center: CGPoint(x: b - q, y: q), radius: q,
+                         startAngle: .degrees(270), endAngle: .degrees(0), clockwise: false)
+            }
+        } else if b > W - r {
             let s = max(a, W - r)
+            p.addLine(to: CGPoint(x: s, y: topY(s) == 0 ? 0 : topY(s)))
             p.addArc(center: CGPoint(x: W - r, y: r), radius: r,
                      startAngle: ang(W - r, r, s, topY(s)), endAngle: ang(W - r, r, b, topY(b)), clockwise: false)
         }
-        // Right vertical (a chord when b lies inside a corner zone)
-        p.addLine(to: CGPoint(x: b, y: H - topY(b)))
+        // Right cut vertical (a chord when b lies inside a corner zone)
+        p.addLine(to: CGPoint(x: b, y: (bFlat && q > 0) ? H - q : H - topY(b)))
         // Bottom edge, right to left
-        if b > W - r {
+        if bFlat {
+            if q > 0 {
+                p.addArc(center: CGPoint(x: b - q, y: H - q), radius: q,
+                         startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+            }
+        } else if b > W - r {
             let s = max(a, W - r)
             p.addArc(center: CGPoint(x: W - r, y: H - r), radius: r,
                      startAngle: ang(W - r, H - r, b, H - topY(b)), endAngle: ang(W - r, H - r, s, H - topY(s)), clockwise: false)
         }
-        if flatExists {
-            p.addLine(to: CGPoint(x: max(a, r), y: H))
+        // Bottom edge to the left cut
+        if aFlat {
+            p.addLine(to: CGPoint(x: a + q, y: H))
+            if q > 0 {
+                p.addArc(center: CGPoint(x: a + q, y: H - q), radius: q,
+                         startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+            }
+        } else {
+            if b > r { p.addLine(to: CGPoint(x: min(b, r) == r ? r : b, y: H)) }
+            if a < r {
+                let e = min(b, r)
+                p.addArc(center: CGPoint(x: r, y: H - r), radius: r,
+                         startAngle: ang(r, H - r, e, H - topY(e)), endAngle: ang(r, H - r, a, H - topY(a)), clockwise: false)
+            }
         }
-        if a < r {
-            let e = min(b, r)
-            p.addArc(center: CGPoint(x: r, y: H - r), radius: r,
-                     startAngle: ang(r, H - r, e, H - topY(e)), endAngle: ang(r, H - r, a, H - topY(a)), clockwise: false)
-        }
-        p.closeSubpath()  // left vertical, likewise a chord inside a corner zone
+        p.closeSubpath()  // left cut vertical
         return p
     }
 }
@@ -1636,7 +1660,6 @@ struct ContentView: View {
                             // sections, following the bar's corners at the ends.
                             .overlay(alignment: .topLeading) {
                                 if !hoveredAllocKeys.isEmpty {
-                                    let lw: CGFloat = 1.5
                                     let widths: [(String, CGFloat)] = [
                                         ("reserved", max(0, w * CGFloat(kernelRemB / total))),
                                         ("app", max(0, w * CGFloat(appUsed / total))),
@@ -1650,10 +1673,16 @@ struct ContentView: View {
                                     ]
                                     let startX = widths.prefix(while: { !hoveredAllocKeys.contains($0.0) }).reduce(CGFloat(0)) { $0 + $1.1 }
                                     let spanW = widths.filter { hoveredAllocKeys.contains($0.0) }.reduce(CGFloat(0)) { $0 + $1.1 }
-                                    SpanOutline(radius: 6 + lw / 2, x0: startX, x1: startX + spanW + lw)
-                                        .stroke(Color.white, lineWidth: lw)
-                                        .frame(width: w + lw, height: 36 + lw)
-                                        .offset(x: -lw / 2, y: -lw / 2)
+                                    // Asymmetric coverage: a 2-point stroke with its centerline
+                                    // half a point outside the boundary puts the outer edge at
+                                    // the original position while the inner edge reaches half a
+                                    // point inside, covering section antialiasing seams and the
+                                    // sections' sharp corners at rounded cuts alike.
+                                    let off: CGFloat = 0.5
+                                    SpanOutline(radius: 6 + off, x0: startX, x1: startX + spanW + 2 * off)
+                                        .stroke(Color.white, lineWidth: 2.0)
+                                        .frame(width: w + 2 * off, height: 36 + 2 * off)
+                                        .offset(x: -off, y: -off)
                                 }
                             }
                         }
@@ -1708,17 +1737,17 @@ struct ContentView: View {
                         HStack(spacing: 12) {
                             StatItem(label: "ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "SESSION IN", value: formatMemory(sessionIn), color: .secondary)
+                            StatItem(label: "IN RATE", value: String(format: "%.1f MB/s", monitor.swapInRateMBs), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "SESSION OUT", value: formatMemory(sessionOut), color: .secondary)
+                            StatItem(label: "OUT RATE", value: String(format: "%.1f MB/s", monitor.swapOutRateMBs), color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         HStack(spacing: 12) {
                             StatItem(label: "LAST I/O", value: lastIO, color: swapIOActive ? .orange : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "IN RATE", value: String(format: "%.1f MB/s", monitor.swapInRateMBs), color: .secondary)
+                            StatItem(label: "SESSION IN", value: formatMemory(sessionIn), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "OUT RATE", value: String(format: "%.1f MB/s", monitor.swapOutRateMBs), color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
+                            StatItem(label: "SESSION OUT", value: formatMemory(sessionOut), color: .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
