@@ -1631,31 +1631,49 @@ struct ContentView: View {
                                 Rectangle()
                                     .fill(reservedBrown)
                                     .frame(width: max(0, w * CGFloat(kernelRemB / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["reserved"] } else if hoveredAllocKeys == ["reserved"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(Color.blue)
                                     .frame(width: max(0, w * CGFloat(appUsed / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(gpuPurple)
                                     .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["gpuInUse"] } else if hoveredAllocKeys == ["gpuInUse"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(gpuPurpleDark)
                                     .frame(width: max(0, w * CGFloat(wiredOther / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["wiredOther"] } else if hoveredAllocKeys == ["wiredOther"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(Color.orange)
                                     .frame(width: max(0, w * CGFloat(compUsed / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["compressed"] } else if hoveredAllocKeys == ["compressed"] { hoveredAllocKeys = [] } }
                                 // Available tiers in a grey ladder
                                 Rectangle()
                                     .fill(Color.gray.opacity(0.42))
                                     .frame(width: max(0, w * CGFloat(purgeableB / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["purgeable"] } else if hoveredAllocKeys == ["purgeable"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(Color.gray.opacity(0.32))
                                     .frame(width: max(0, w * CGFloat(speculativeB / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["speculative"] } else if hoveredAllocKeys == ["speculative"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(Color.gray.opacity(0.22))
                                     .frame(width: max(0, w * CGFloat(fileCacheB / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["fileBacked"] } else if hoveredAllocKeys == ["fileBacked"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(Color.gray.opacity(0.10))
                                     .frame(width: max(0, w * CGFloat(unallocatedB / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["unallocated"] } else if hoveredAllocKeys == ["unallocated"] { hoveredAllocKeys = [] } }
                                 Spacer(minLength: 0)
                             }
                             .frame(height: 36)
@@ -1689,6 +1707,7 @@ struct ContentView: View {
                                         .stroke(Color.white, lineWidth: 2.0)
                                         .frame(width: w + 2 * off, height: 36 + 2 * off)
                                         .offset(x: -off, y: -off)
+                                        .allowsHitTesting(false)
                                 }
                             }
                         }
@@ -1830,12 +1849,12 @@ struct ContentView: View {
                             // pair relatively to spot geometry-bound vs fill-bound work.
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    graphHeader("RENDERER", "\(monitor.gpuStats.rendererUtilization)%", gpuPurple, note: "fragment shading")
+                                    graphHeader("RENDERER", "\(monitor.gpuStats.rendererUtilization)%", gpuPurple, note: "")
                                     UsageBarView(segments: [(Double(monitor.gpuStats.rendererUtilization) / 100.0, gpuPurple)], height: 8)
                                 }
                                 .frame(maxWidth: .infinity)
                                 VStack(alignment: .leading, spacing: 6) {
-                                    graphHeader("TILER", "\(monitor.gpuStats.tilerUtilization)%", gpuPurple, note: "geometry binning")
+                                    graphHeader("TILER", "\(monitor.gpuStats.tilerUtilization)%", gpuPurple, note: "")
                                     UsageBarView(segments: [(Double(monitor.gpuStats.tilerUtilization) / 100.0, gpuPurple)], height: 8)
                                 }
                                 .frame(maxWidth: .infinity)
