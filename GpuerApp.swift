@@ -1255,7 +1255,7 @@ struct ContentView: View {
     private var minWindowWidth: CGFloat {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
-        if showMemory { columns += 300 }
+        if showMemory { columns += 412 }
         if showGPU { columns += 260 }
         if showCPU { columns += 260 }
         if showProcesses { columns += 220 }
@@ -1500,22 +1500,16 @@ struct ContentView: View {
                         .frame(height: 36)
 
                         // Legend
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 14) {
-                                LegendItem(color: reservedBrown, label: "Reserved", value: formatMemory(UInt64(kernelRemB)))
-                                LegendItem(color: .blue, label: "App", value: formatMemory(UInt64(appUsed)))
-                                LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
-                            }
-                            HStack(spacing: 14) {
-                                LegendItem(color: gpuPurpleDark, label: "Wired - Other", value: formatMemory(UInt64(wiredOther)))
-                                LegendItem(color: .orange, label: "Compressed", value: formatMemory(UInt64(compUsed)))
-                                LegendItem(color: .gray.opacity(0.42), label: "Available - Purgeable Cache", value: formatMemory(UInt64(purgeableB)))
-                            }
-                            HStack(spacing: 14) {
-                                LegendItem(color: .gray.opacity(0.32), label: "Available - Speculative Cache", value: formatMemory(UInt64(speculativeB)))
-                                LegendItem(color: .gray.opacity(0.22), label: "Available - File Cache", value: formatMemory(UInt64(fileCacheB)))
-                                LegendItem(color: .gray.opacity(0.10), label: "Available - Unallocated", value: formatMemory(UInt64(unallocatedB)))
-                            }
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], alignment: .leading, spacing: 6) {
+                            LegendItem(color: reservedBrown, label: "Reserved", value: formatMemory(UInt64(kernelRemB)))
+                            LegendItem(color: .blue, label: "App", value: formatMemory(UInt64(appUsed)))
+                            LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
+                            LegendItem(color: gpuPurpleDark, label: "Wired - Other", value: formatMemory(UInt64(wiredOther)))
+                            LegendItem(color: .orange, label: "Compressed", value: formatMemory(UInt64(compUsed)))
+                            LegendItem(color: .gray.opacity(0.42), label: "Purgeable Cache", value: formatMemory(UInt64(purgeableB)))
+                            LegendItem(color: .gray.opacity(0.32), label: "Speculative Cache", value: formatMemory(UInt64(speculativeB)))
+                            LegendItem(color: .gray.opacity(0.22), label: "File Cache", value: formatMemory(UInt64(fileCacheB)))
+                            LegendItem(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)))
                         }
                         .foregroundColor(.secondary)
 
@@ -1581,7 +1575,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 300, idealWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 412, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showGPU {
@@ -1675,6 +1669,19 @@ struct ContentView: View {
                         color: .blue
                     )
 
+                    // CPU history, directly under the utilization readout (GPU layout parity)
+                    VStack(alignment: .leading, spacing: 8) {
+                        TrendRowView(title: "CPU UTILIZATION (%, last 5 min)",
+                                     current: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
+                                     caption: nil,
+                                     data: monitor.cpuHistory.map { $0 * 100 },
+                                     maxValue: 100.0, color: .blue,
+                                     yQuarterLabel: { f in "\(Int(f * 100))" })
+                    }
+                    .padding(10)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(8)
+
                     // Cluster loads
                     VStack(alignment: .leading, spacing: 10) {
                         CoreLoadRow(label: "Performance", usage: monitor.cpuStats.performance,
@@ -1708,22 +1715,6 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(8)
 
-                    // CPU history
-                    VStack(alignment: .leading, spacing: 8) {
-                        TrendRowView(title: "CPU LOAD (%, last 5 min)",
-                                     current: "\(Int((monitor.cpuStats.overall * 100).rounded()))%",
-                                     caption: nil,
-                                     data: monitor.cpuHistory.map { $0 * 100 },
-                                     maxValue: 100.0, color: .blue,
-                                     yQuarterLabel: { f in "\(Int(f * 100))" })
-                    }
-                    .padding(10)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
-
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
                 }
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
