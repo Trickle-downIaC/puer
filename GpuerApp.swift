@@ -1026,7 +1026,7 @@ struct RateCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(color.opacity(0.08))
-        .cornerRadius(8)
+        .cornerRadius(10)
     }
 }
 
@@ -1159,7 +1159,7 @@ let gpuPurple = Color(red: 0.78, green: 0.42, blue: 1.00)
 // Secondary (one step darker): mapped/idle claims; solid so text stays readable.
 let gpuPurpleDark = Color(red: 0.58, green: 0.30, blue: 0.88)
 // Reserved carveout: deep brown, kept well apart from Compressed orange.
-let reservedBrown = Color(red: 0.42, green: 0.27, blue: 0.15)
+let reservedBrown = Color(red: 0.60, green: 0.42, blue: 0.26)
 // Process-list accent: dark red. (SwiftUI's .pink renders as a red on macOS;
 // named for what it looks like, not the API token.)
 let processRed = Color.pink
@@ -1388,49 +1388,66 @@ struct ContentView: View {
                         Text("Used (Activity Monitor style): \(formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes))")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary.opacity(0.8))
-                        Divider()
-                            .padding(.vertical, 2)
-                        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                            GridRow {
-                                StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
-                                // Row theme: app memory plus the two reclaimable caches beside
-                                // it, the exact trio Activity Monitor folds into its Used.
-                                StatItem(label: "PURGEABLE CACHE", value: formatMemory(monitor.memoryStats.purgeableBytes), color: .secondary)
-                                StatItem(label: "SPECULATIVE CACHE", value: formatMemory(monitor.memoryStats.speculativeBytes), color: .secondary)
-                            }
-                            Divider()
-                                .gridCellUnsizedAxes(.horizontal)
-                            GridRow {
-                                StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: gpuPurple)
-                                if monitor.wiredLimitMB > 0 {
-                                    let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
-                                    let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
-                                    StatItem(label: "WIRED LIMIT HEADROOM", value: formatMemory(wiredAvail), color: .secondary)
-                                    StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
-                                } else {
-                                    StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
-                                    StatItem(label: "WIRED LIMIT", value: "macOS default", color: .secondary)
-                                }
-                            }
-                            Divider()
-                                .gridCellUnsizedAxes(.horizontal)
-                            GridRow {
-                                StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
-                                StatItem(label: "PRESSURE", value: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
-                                         color: monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary)
-                                let lastPressure = monitor.lastPressureEvent.map { d -> String in
-                                    let m = Int(Date().timeIntervalSince(d) / 60)
-                                    return m < 1 ? "<1 min ago" : "\(m) min ago"
-                                } ?? "-"
-                                StatItem(label: "LAST PRESSURE", value: lastPressure, color: monitor.lastPressureEvent != nil ? .orange : .secondary)
-                            }
-                        }
-                        .padding(.top, 2)
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(headroomColor.opacity(0.06))
-                    .cornerRadius(12)
+                    .cornerRadius(10)
+                    // Memory trend directly under the readout it histories (GPU/CPU parity)
+                    VStack(alignment: .leading, spacing: 12) {
+                        let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
+                        let minAvailBytes = UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac))
+                        TrendRowView(title: "HARD ALLOCATED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                                     current: formatMemory(monitor.memoryStats.usedBytes),
+                                     caption: "Minimum available memory seen: \(formatMemory(minAvailBytes))",
+                                     data: monitor.memoryHistory,
+                                     maxValue: 1.0, color: headroomColor,
+                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(10)
+
+                    // Limits and pressure, directly under the trend they contextualize.
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 20) {
+                            if monitor.wiredLimitMB > 0 {
+                                let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
+                                let wiredAvail = limitBytes > monitor.memoryStats.wiredBytes ? limitBytes - monitor.memoryStats.wiredBytes : 0
+                                StatItem(label: "WIRED LIMIT HEADROOM", value: formatMemory(wiredAvail), color: .secondary)
+                                StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                            } else {
+                                StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
+                                StatItem(label: "WIRED LIMIT", value: "macOS default", color: .secondary)
+                            }
+                            StatItem(label: "PRESSURE", value: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
+                                     color: monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary)
+                            let lastPressure = monitor.lastPressureEvent.map { d -> String in
+                                let m = Int(Date().timeIntervalSince(d) / 60)
+                                return m < 1 ? "<1 min ago" : "\(m) min ago"
+                            } ?? "-"
+                            StatItem(label: "LAST PRESSURE", value: lastPressure, color: monitor.lastPressureEvent != nil ? .orange : .secondary)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(10)
+
+                    // Core partition at a glance; the caches live on the allocation chart.
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 20) {
+                            StatItem(label: "RESERVED", value: formatMemory(monitor.memoryStats.kernelOtherBytes), color: reservedBrown)
+                            StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
+                            StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: gpuPurple)
+                            StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                            StatItem(label: "AVAILABLE", value: formatMemory(monitor.memoryStats.availableBytes), color: .secondary)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(10)
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
@@ -1516,7 +1533,7 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
                     // SWAP: overflow out of unified memory onto disk
                     VStack(alignment: .leading, spacing: 8) {
@@ -1550,27 +1567,8 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
-                    // Memory trend: headerless card, context folded into the row title
-                    VStack(alignment: .leading, spacing: 12) {
-                        let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
-                        let minAvailBytes = UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac))
-                        TrendRowView(title: "HARD ALLOCATED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
-                                     current: formatMemory(monitor.memoryStats.usedBytes),
-                                     caption: "Minimum available memory seen: \(formatMemory(minAvailBytes))",
-                                     data: monitor.memoryHistory,
-                                     maxValue: 1.0, color: headroomColor,
-                                     yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
-                    }
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
-
-
-                    .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
                 }
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
@@ -1602,7 +1600,7 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
                     // Memory claims on the unified pool, from the GPU's perspective
                     VStack(alignment: .leading, spacing: 10) {
@@ -1617,7 +1615,7 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
                     // Trends
                     VStack(alignment: .leading, spacing: 12) {
@@ -1647,7 +1645,7 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
                 }
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
@@ -1680,7 +1678,7 @@ struct ContentView: View {
                     }
                     .padding(10)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
                     // Cluster loads
                     VStack(alignment: .leading, spacing: 10) {
@@ -1691,7 +1689,7 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
                     // Per-core bars
                     VStack(alignment: .leading, spacing: 8) {
@@ -1713,7 +1711,7 @@ struct ContentView: View {
                     }
                     .padding(12)
                     .background(Color.primary.opacity(0.03))
-                    .cornerRadius(8)
+                    .cornerRadius(10)
 
                 }
                 .padding([.horizontal, .bottom], 16)
