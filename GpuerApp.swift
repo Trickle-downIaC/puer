@@ -666,7 +666,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
-    out += "used (strict): \(gib(mem.usedBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    out += "used (strict): \(gib(mem.usedBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + wired \(gib(mem.wiredBytes)) + app \(gib(mem.appBytes)) + compressed \(gib(mem.compressedBytes)))\n"
     // Reserved identified live: the firmware carveout the VM system never
     // manages, declared by the kernel itself as memsize minus memsize_usable.
     var usableMem: UInt64 = 0
@@ -1576,14 +1576,6 @@ struct ContentView: View {
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["reserved"] ? 0.10 : 0.05)))
                                 .contentShape(Rectangle())
                                 .onHover { h in if h { hoveredAllocKeys = ["reserved"] } else if hoveredAllocKeys == ["reserved"] { hoveredAllocKeys = [] } }
-                            StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
-                                .fixedSize()
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["app"] ? 0.10 : 0.05)))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
                             StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: gpuPurple)
                                 .fixedSize()
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1592,6 +1584,14 @@ struct ContentView: View {
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["gpuInUse", "wiredOther"] ? 0.10 : 0.05)))
                                 .contentShape(Rectangle())
                                 .onHover { h in if h { hoveredAllocKeys = ["gpuInUse", "wiredOther"] } else if hoveredAllocKeys == ["gpuInUse", "wiredOther"] { hoveredAllocKeys = [] } }
+                            StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
+                                .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["app"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
                             StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
                                 .fixedSize()
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1642,11 +1642,6 @@ struct ContentView: View {
                                     .contentShape(Rectangle())
                                     .onHover { h in if h { hoveredAllocKeys = ["reserved"] } else if hoveredAllocKeys == ["reserved"] { hoveredAllocKeys = [] } }
                                 Rectangle()
-                                    .fill(Color.blue)
-                                    .frame(width: max(0, w * CGFloat(appUsed / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
-                                Rectangle()
                                     .fill(gpuPurple)
                                     .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
                                     .contentShape(Rectangle())
@@ -1656,6 +1651,11 @@ struct ContentView: View {
                                     .frame(width: max(0, w * CGFloat(wiredOther / total)))
                                     .contentShape(Rectangle())
                                     .onHover { h in if h { hoveredAllocKeys = ["wiredOther"] } else if hoveredAllocKeys == ["wiredOther"] { hoveredAllocKeys = [] } }
+                                Rectangle()
+                                    .fill(Color.blue)
+                                    .frame(width: max(0, w * CGFloat(appUsed / total)))
+                                    .contentShape(Rectangle())
+                                    .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
                                 Rectangle()
                                     .fill(Color.orange)
                                     .frame(width: max(0, w * CGFloat(compUsed / total)))
@@ -1694,9 +1694,9 @@ struct ContentView: View {
                                 if !hoveredAllocKeys.isEmpty {
                                     let widths: [(String, CGFloat)] = [
                                         ("reserved", max(0, w * CGFloat(kernelRemB / total))),
-                                        ("app", max(0, w * CGFloat(appUsed / total))),
                                         ("gpuInUse", max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total))),
                                         ("wiredOther", max(0, w * CGFloat(wiredOther / total))),
+                                        ("app", max(0, w * CGFloat(appUsed / total))),
                                         ("compressed", max(0, w * CGFloat(compUsed / total))),
                                         ("purgeable", max(0, w * CGFloat(purgeableB / total))),
                                         ("speculative", max(0, w * CGFloat(speculativeB / total))),
