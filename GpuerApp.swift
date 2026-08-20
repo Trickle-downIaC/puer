@@ -1255,7 +1255,7 @@ struct ContentView: View {
     private var minWindowWidth: CGFloat {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
-        if showMemory { columns += 412 }
+        if showMemory { columns += 433 }
         if showGPU { columns += 260 }
         if showCPU { columns += 260 }
         if showProcesses { columns += 220 }
@@ -1434,8 +1434,13 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
-                    // Core partition at a glance; the caches live on the allocation chart.
-                    VStack(alignment: .leading, spacing: 6) {
+                    // UNIFIED MEMORY POOL
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Unified memory allocation")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        // The five primary readouts head the card they caption; the chart
+                        // and its cache-tier legend follow.
                         HStack(spacing: 20) {
                             StatItem(label: "RESERVED", value: formatMemory(monitor.memoryStats.kernelOtherBytes), color: reservedBrown)
                             StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
@@ -1443,16 +1448,6 @@ struct ContentView: View {
                             StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
                             StatItem(label: "AVAILABLE", value: formatMemory(monitor.memoryStats.availableBytes), color: .secondary)
                         }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
-
-                    // UNIFIED MEMORY POOL
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Unified memory allocation")
-                            .font(.system(size: 13, weight: .semibold))
 
                         let total = Double(max(monitor.memoryStats.totalBytes, 1))
                         let gpuActive = Double(monitor.gpuStats.inUseMemory)
@@ -1518,11 +1513,8 @@ struct ContentView: View {
 
                         // Legend
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], alignment: .leading, spacing: 6) {
-                            LegendItem(color: reservedBrown, label: "Reserved", value: formatMemory(UInt64(kernelRemB)))
-                            LegendItem(color: .blue, label: "App", value: formatMemory(UInt64(appUsed)))
                             LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
                             LegendItem(color: gpuPurpleDark, label: "Wired - Other", value: formatMemory(UInt64(wiredOther)))
-                            LegendItem(color: .orange, label: "Compressed", value: formatMemory(UInt64(compUsed)))
                             LegendItem(color: .gray.opacity(0.42), label: "Purgeable Cache", value: formatMemory(UInt64(purgeableB)))
                             LegendItem(color: .gray.opacity(0.32), label: "Speculative Cache", value: formatMemory(UInt64(speculativeB)))
                             LegendItem(color: .gray.opacity(0.22), label: "File Cache", value: formatMemory(UInt64(fileCacheB)))
@@ -1573,7 +1565,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 412, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 433, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showGPU {
