@@ -662,7 +662,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
     out += "\n[MEMORY now]\n"
     out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
-    out += "hard allocated: \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    out += "used (strict): \(gib(mem.usedBytes)) GiB (app \(gib(mem.appBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)))\n"
     // Plain file cache: file-backed pages on the active/inactive queues. With
     // purgeable and speculative this reconstructs Activity Monitor's Cached
     // Files; in Puer's model all three live inside Available.
@@ -674,7 +674,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
     // "Memory Used" counts purgeable cache and the reserved carveout in Used,
     // which is why it reads above ours and overlaps its own Cached Files.
-    out += "used (activity monitor style; empirical: app + purgeable + wired + compressed + reserved): \(gib(mem.appBytes + mem.purgeableBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
+    out += "used (loose / activity monitor; empirical: app + purgeable + wired + compressed + reserved): \(gib(mem.appBytes + mem.purgeableBytes + mem.wiredBytes + mem.compressedBytes + mem.kernelOtherBytes)) GiB\n"
     out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
@@ -702,7 +702,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "overall: \(pct(cpu.overall)), P-cores: \(pct(cpu.performance)), E-cores: \(pct(cpu.efficiency))\n"
     out += "per-core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ","))\n"
     out += "\n[HISTORY ~5min, 2s samples, oldest->newest, values are %]\n"
-    out += "hard allocated: \(seriesSummary(monitor.memoryHistory))\n"
+    out += "used (strict): \(seriesSummary(monitor.memoryHistory))\n"
     out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
     let peakUsedFrac = monitor.memoryHistory.max() ?? 0
     out += "minimum available seen: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB (lowest point in window)\n"
@@ -1340,6 +1340,14 @@ struct ContentView: View {
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
 
+    // Headline stat cell: natural-size content in an equal-width frame.
+    @ViewBuilder
+    private func headlineStat(_ label: String, _ value: String, _ color: Color) -> some View {
+        StatItem(label: label, value: value, color: color)
+            .fixedSize()
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     // Legend chip: a LegendItem in the same hoverable-bubble chrome as the
     // readout row, locked at natural size.
     @ViewBuilder
@@ -1362,7 +1370,7 @@ struct ContentView: View {
     private var minWindowWidth: CGFloat {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
-        if showMemory { columns += 433 }
+        if showMemory { columns += 380 }  // DIAGNOSTIC: restore with the frame above
         if showGPU { columns += 260 }
         if showCPU { columns += 260 }
         if showProcesses { columns += 220 }
@@ -1477,72 +1485,81 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Unified Memory", icon: "memorychip")
 
-                    // HEADLINE: Hard Allocated, the strict bottom-up sum (app + wired +
-                    // compressed) that excludes reclaimable cache; an Activity Monitor
-                    // style Used is shown beneath for terminology parity.
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    // HEADLINE: the verdict pair (Used Strict, Available) lives in the
+                    // status-tinted bubble spanning the card; the secondary economy facts
+                    // sit beneath as an equal-width scaling row.
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Compressed to fit the column's declared minimum: smaller type,
+                        // tighter gaps, and AVAILABLE drops its "of total" (the total
+                        // still lives in the trend title below).
+                        HStack(alignment: .lastTextBaseline, spacing: 4) {
                             Text(String(format: "%.1f", Double(monitor.memoryStats.usedBytes) / 1_073_741_824))
                                 .font(.system(size: 48, weight: .bold, design: .rounded))
                                 .foregroundColor(headroomColor)
-                            Text("GB Hard Allocated")
+                                .lineLimit(1)
+                                .fixedSize()
+                            Text("GB Used (Strict)")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundColor(headroomColor.opacity(0.8))
+                                .fixedSize()
+                            // Equal spacers on both sides let the divider hover centered
+                            // between the two readouts instead of hugging AVAILABLE.
+                            Spacer(minLength: 4)
+                            Divider()
+                                .frame(height: 34)
+                                .overlay(headroomColor.opacity(0.35))
+                            Spacer(minLength: 4)
+                            StatItem(label: "AVAILABLE", value: formatMemory(monitor.memoryStats.availableBytes), color: headroomColor)
+                                .fixedSize()
                         }
-                        Text("\(formatMemory(monitor.memoryStats.availableBytes)) available of \(formatMemory(monitor.memoryStats.totalBytes)) unified memory")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                        Text("Used (Activity Monitor style): \(formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes))")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary.opacity(0.8))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(headroomColor.opacity(0.12)))
+                        let usedLooseValue = formatMemory(monitor.memoryStats.appBytes + monitor.memoryStats.purgeableBytes + monitor.memoryStats.wiredBytes + monitor.memoryStats.compressedBytes + monitor.memoryStats.kernelOtherBytes)
+                        let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
+                        let minAvailValue = formatMemory(UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac)))
+                        let pressureColor: Color = monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary
+                        let lastPressure = monitor.lastPressureEvent.map { d -> String in
+                            let m = Int(Date().timeIntervalSince(d) / 60)
+                            return m < 1 ? "<1 min ago" : "\(m) min ago"
+                        } ?? "-"
+                        let lastPressureColor: Color = monitor.lastPressureEvent != nil ? .orange : .secondary
+                        // Two-state row: four across when they fit at natural size,
+                        // else facts over verdicts as two rows of two.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 12) {
+                                headlineStat("USED (LOOSE)", usedLooseValue, .secondary)
+                                headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
+                                headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
+                                headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 12) {
+                                    headlineStat("USED (LOOSE)", usedLooseValue, .secondary)
+                                    headlineStat("AVAIL. LOW (5 MIN)", minAvailValue, .secondary)
+                                }
+                                HStack(spacing: 12) {
+                                    headlineStat("PRESSURE", kernelPressureName(monitor.memoryStats.kernelPressureLevel), pressureColor)
+                                    headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
+                                }
+                            }
+                        }
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(headroomColor.opacity(0.06))
+                    .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
                     // Memory trend directly under the readout it histories (GPU/CPU parity)
                     VStack(alignment: .leading, spacing: 12) {
-                        let peakUsedFrac = monitor.memoryHistory.max() ?? monitor.memoryStats.usedFraction
-                        let minAvailBytes = UInt64(Double(monitor.memoryStats.totalBytes) * max(0, 1 - peakUsedFrac))
-                        TrendRowView(title: "HARD ALLOCATED (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
+                        TrendRowView(title: "USED, STRICT (last 5 min, of \(formatMemory(monitor.memoryStats.totalBytes)))",
                                      current: formatMemory(monitor.memoryStats.usedBytes),
-                                     caption: "Minimum available memory seen: \(formatMemory(minAvailBytes))",
+                                     caption: nil,
                                      data: monitor.memoryHistory,
                                      maxValue: 1.0, color: headroomColor,
                                      yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                     }
                     .padding(12)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
-
-                    // Limits and pressure, directly under the trend they contextualize.
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 20) {
-                            if monitor.wiredLimitMB > 0 {
-                                let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
-                                // The iogpu limit caps GPU wiring only: total wired can legally
-                                // exceed it on kernel wiring (observed live). True GPU-wired is
-                                // unmeasurable between In-Use and total, so show the exact upper
-                                // bound: at most this much more can be wired for the GPU.
-                                let gpuWiredNow = monitor.gpuStats.inUseMemory
-                                let wiredAvail = limitBytes > gpuWiredNow ? limitBytes - gpuWiredNow : 0
-                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
-                                StatItem(label: "GPU WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
-                            } else {
-                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
-                                StatItem(label: "GPU WIRED LIMIT", value: "macOS default", color: .secondary)
-                            }
-                            StatItem(label: "PRESSURE", value: kernelPressureName(monitor.memoryStats.kernelPressureLevel),
-                                     color: monitor.memoryStats.kernelPressureLevel > 1 ? .orange : .secondary)
-                            let lastPressure = monitor.lastPressureEvent.map { d -> String in
-                                let m = Int(Date().timeIntervalSince(d) / 60)
-                                return m < 1 ? "<1 min ago" : "\(m) min ago"
-                            } ?? "-"
-                            StatItem(label: "LAST PRESSURE", value: lastPressure, color: monitor.lastPressureEvent != nil ? .orange : .secondary)
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
@@ -1721,6 +1738,33 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
+                    // GPU wired limit: its own tile, a hard driver ceiling distinct
+                    // from the pressure economy; the limit caps GPU wiring only and
+                    // headroom is the at-most bound from GPU In-Use.
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Wired (GPU)")
+                            .font(.system(size: 13, weight: .semibold))
+                        HStack(spacing: 12) {
+                            if monitor.wiredLimitMB > 0 {
+                                let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
+                                let gpuWiredNow = monitor.gpuStats.inUseMemory
+                                let wiredAvail = limitBytes > gpuWiredNow ? limitBytes - gpuWiredNow : 0
+                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                StatItem(label: "GPU WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                StatItem(label: "GPU WIRED LIMIT", value: "macOS default", color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.primary.opacity(0.03))
+                    .cornerRadius(10)
+
                     // SWAP: overflow out of unified memory onto disk
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Swap (disk overflow)")
@@ -1759,7 +1803,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 433, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)  // DIAGNOSTIC floor: restore after identifying the blocker
             }
 
             if showGPU {
