@@ -934,6 +934,31 @@ struct ColumnToggle: View {
     }
 }
 
+// Allocation-legend entry: swatch beside a label-over-value stack. The fixed
+// two-line shape is the standardized return; labels never wrap mid-phrase.
+struct LegendItem: View {
+    let color: Color
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(value)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
 struct SectionHeader: View {
     let title: String
     let icon: String
@@ -1513,59 +1538,21 @@ struct ContentView: View {
                         .frame(height: 36)
 
                         // Legend
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 14) {
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(reservedBrown).frame(width: 10, height: 10)
-                                    Text("Reserved \(formatMemory(UInt64(kernelRemB)))")
-                                        .font(.system(size: 10))
-                                }
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.blue).frame(width: 10, height: 10)
-                                    Text("App \(formatMemory(UInt64(appUsed)))")
-                                        .font(.system(size: 10))
-                                }
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(gpuPurple).frame(width: 10, height: 10)
-                                    Text("Wired - GPU In-Use \(formatMemory(monitor.gpuStats.inUseMemory))")
-                                        .font(.system(size: 10))
-                                }
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(gpuPurpleDark).frame(width: 10, height: 10)
-                                    Text("Wired - Other \(formatMemory(UInt64(wiredOther)))")
-                                        .font(.system(size: 10))
-                                }
+                                LegendItem(color: reservedBrown, label: "Reserved", value: formatMemory(UInt64(kernelRemB)))
+                                LegendItem(color: .blue, label: "App", value: formatMemory(UInt64(appUsed)))
+                                LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
                             }
                             HStack(spacing: 14) {
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.orange).frame(width: 10, height: 10)
-                                    Text("Compressed \(formatMemory(UInt64(compUsed)))")
-                                        .font(.system(size: 10))
-                                }
+                                LegendItem(color: gpuPurpleDark, label: "Wired - Other", value: formatMemory(UInt64(wiredOther)))
+                                LegendItem(color: .orange, label: "Compressed", value: formatMemory(UInt64(compUsed)))
+                                LegendItem(color: .gray.opacity(0.42), label: "Available - Purgeable Cache", value: formatMemory(UInt64(purgeableB)))
                             }
                             HStack(spacing: 14) {
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.gray.opacity(0.42)).frame(width: 10, height: 10)
-                                    Text("Available - Purgeable Cache \(formatMemory(UInt64(purgeableB)))")
-                                        .font(.system(size: 10))
-                                }
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.gray.opacity(0.32)).frame(width: 10, height: 10)
-                                    Text("Available - Speculative Cache \(formatMemory(UInt64(speculativeB)))")
-                                        .font(.system(size: 10))
-                                }
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.gray.opacity(0.22)).frame(width: 10, height: 10)
-                                    Text("Available - File Cache \(formatMemory(UInt64(fileCacheB)))")
-                                        .font(.system(size: 10))
-                                }
-                            }
-                            HStack(spacing: 14) {
-                                HStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2).fill(.gray.opacity(0.10)).frame(width: 10, height: 10)
-                                    Text("Available - Unallocated \(formatMemory(UInt64(unallocatedB)))")
-                                        .font(.system(size: 10))
-                                }
+                                LegendItem(color: .gray.opacity(0.32), label: "Available - Speculative Cache", value: formatMemory(UInt64(speculativeB)))
+                                LegendItem(color: .gray.opacity(0.22), label: "Available - File Cache", value: formatMemory(UInt64(fileCacheB)))
+                                LegendItem(color: .gray.opacity(0.10), label: "Available - Unallocated", value: formatMemory(UInt64(unallocatedB)))
                             }
                         }
                         .foregroundColor(.secondary)
