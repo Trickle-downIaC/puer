@@ -1206,46 +1206,6 @@ struct StatusPill: View {
 // Three-state banner: ongoing pressure (red, with swap-out rate and growers),
 // past event this session (orange, with when + what grew), stale residue (quiet gray).
 // The app cannot see events from before its own launch; residue is labeled as such.
-struct PressureBannerView: View {
-    @ObservedObject var monitor: SystemMonitor
-
-    private var ongoing: Bool {
-        monitor.memoryStats.kernelPressureLevel > 1 || monitor.swapOutRateMBs > 5.0
-    }
-
-    var body: some View {
-        if ongoing {
-            banner(color: .red, icon: "exclamationmark.octagon.fill",
-                   text: "Memory pressure ACTIVE: kernel \(kernelPressureName(monitor.memoryStats.kernelPressureLevel)), swap out \(String(format: "%.0f", monitor.swapOutRateMBs)) MB/s"
-                        + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} growing: \(monitor.lastEventGrowers.joined(separator: ", "))"))
-        } else if let evt = monitor.lastPressureEvent {
-            banner(color: .orange, icon: "exclamationmark.triangle.fill",
-                   text: "Pressure \(minutesAgo(evt)) ago this session"
-                        + (monitor.lastEventGrowers.isEmpty ? "" : " \u{2022} grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))"))
-        }
-    }
-
-    private func minutesAgo(_ d: Date) -> String {
-        let m = Int(Date().timeIntervalSince(d) / 60)
-        return m < 1 ? "under a minute" : "\(m) min"
-    }
-
-    private func banner(color: Color, icon: String, text: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .foregroundColor(color)
-                .font(.system(size: 11))
-            Text(text)
-                .font(.system(size: 11))
-                .foregroundColor(color)
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.08))
-        .cornerRadius(6)
-    }
-}
-
 // A labeled full-width trend row: metric name (with units), current value inline,
 // sparkline beneath, optional caption. Replaces the old unlabeled side-by-side charts.
 struct TrendRowView: View {
@@ -1466,9 +1426,6 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(headroomColor.opacity(0.06))
                     .cornerRadius(12)
-
-                    // Pressure story: ongoing / past-event-this-session / stale residue
-                    PressureBannerView(monitor: monitor)
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {

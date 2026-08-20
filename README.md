@@ -17,7 +17,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 - **Physical memory footprint** for per-process memory (the same metric Activity Monitor uses) instead of RSS, which inflates numbers by counting shared pages multiple times
 - **Labeled trend charts (last 5 min)**: available memory, GPU utilization, GPU memory in-use, and CPU load
 - **Copy Report button**: one click copies a plaintext diagnostic block for export
-- **Memory pressure visualization**: a dedicated swap card (on disk, session swap out, split in/out rates) and an alert banner for ongoing pressure or a past event with timestamp and the processes that grew most before it
+- **Memory pressure visualization**: a dedicated swap card (on disk, session swap out, split in/out rates) with pressure shown in permanent grid cells and event growers captured in the report
 - **Device information**: hardware summary, thermal state, and power mode
 - **Runs in the Dock**, not the menu bar: closing the window keeps the app alive and collecting; reopen from the Dock
 
