@@ -997,38 +997,6 @@ struct SpanOutline: Shape {
     }
 }
 
-// Flow layout: places natural-width items left to right, wrapping to new
-// rows as the container narrows; no item is ever shrunken or clipped.
-struct FlowLayout: Layout {
-    var hSpacing: CGFloat = 14
-    var vSpacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, maxX: CGFloat = 0
-        for sub in subviews {
-            let sz = sub.sizeThatFits(.unspecified)
-            if x > 0 && x + sz.width > width { x = 0; y += rowH + vSpacing; rowH = 0 }
-            x += sz.width + hSpacing
-            rowH = max(rowH, sz.height)
-            maxX = max(maxX, x - hSpacing)
-        }
-        return CGSize(width: proposal.width ?? maxX, height: y + rowH)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowH: CGFloat = 0
-        for sub in subviews {
-            let sz = sub.sizeThatFits(.unspecified)
-            if x > bounds.minX && x + sz.width > bounds.maxX { x = bounds.minX; y += rowH + vSpacing; rowH = 0 }
-            sub.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
-            x += sz.width + hSpacing
-            rowH = max(rowH, sz.height)
-        }
-    }
-}
 
 // Allocation-legend entry: swatch beside a label-over-value stack. The fixed
 // two-line shape is the standardized return; labels never wrap mid-phrase.
@@ -1348,6 +1316,22 @@ struct ContentView: View {
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
 
+    // Legend chip: a LegendItem in the same hoverable-bubble chrome as the
+    // readout row, locked at natural size.
+    @ViewBuilder
+    private func legendChip(color: Color, label: String, value: String, keys: Set<String>) -> some View {
+        LegendItem(color: color, label: label, value: value)
+            .fixedSize()
+            // Natural width is the floor (fixedSize); the frame lets the chip
+            // expand so each row equalizes and fills when space allows.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.10 : 0.05)))
+            .contentShape(Rectangle())
+            .onHover { h in if h { hoveredAllocKeys = keys } else if hoveredAllocKeys == keys { hoveredAllocKeys = [] } }
+    }
+
     // Two-layer compression restriction: the window can never shrink below the
     // top bar's fully compacted (tier-3) width, and never below the summed
     // minimums of whichever columns are visible. Fewer columns, more compression.
@@ -1548,6 +1532,7 @@ struct ContentView: View {
                         HStack(spacing: 6) {
                             StatItem(label: "RESERVED", value: formatMemory(monitor.memoryStats.kernelOtherBytes), color: reservedBrown)
                                 .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["reserved"] ? 0.10 : 0.05)))
@@ -1555,6 +1540,7 @@ struct ContentView: View {
                                 .onHover { h in if h { hoveredAllocKeys = ["reserved"] } else if hoveredAllocKeys == ["reserved"] { hoveredAllocKeys = [] } }
                             StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
                                 .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["app"] ? 0.10 : 0.05)))
@@ -1562,6 +1548,7 @@ struct ContentView: View {
                                 .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
                             StatItem(label: "WIRED", value: formatMemory(monitor.memoryStats.wiredBytes), color: gpuPurple)
                                 .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["gpuInUse", "wiredOther"] ? 0.10 : 0.05)))
@@ -1569,6 +1556,7 @@ struct ContentView: View {
                                 .onHover { h in if h { hoveredAllocKeys = ["gpuInUse", "wiredOther"] } else if hoveredAllocKeys == ["gpuInUse", "wiredOther"] { hoveredAllocKeys = [] } }
                             StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
                                 .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["compressed"] ? 0.10 : 0.05)))
@@ -1576,6 +1564,7 @@ struct ContentView: View {
                                 .onHover { h in if h { hoveredAllocKeys = ["compressed"] } else if hoveredAllocKeys == ["compressed"] { hoveredAllocKeys = [] } }
                             StatItem(label: "AVAILABLE", value: formatMemory(monitor.memoryStats.availableBytes), color: .secondary)
                                 .fixedSize()
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["purgeable", "speculative", "fileBacked", "unallocated"] ? 0.10 : 0.05)))
@@ -1671,26 +1660,31 @@ struct ContentView: View {
                         .frame(height: 36)
 
                         // Legend
-                        FlowLayout(hSpacing: 14, vSpacing: 6) {
-                            LegendItem(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["gpuInUse"] } else if hoveredAllocKeys == ["gpuInUse"] { hoveredAllocKeys = [] } }
-                            LegendItem(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["wiredOther"] } else if hoveredAllocKeys == ["wiredOther"] { hoveredAllocKeys = [] } }
-                            LegendItem(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["purgeable"] } else if hoveredAllocKeys == ["purgeable"] { hoveredAllocKeys = [] } }
-                            LegendItem(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["speculative"] } else if hoveredAllocKeys == ["speculative"] { hoveredAllocKeys = [] } }
-                            LegendItem(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["fileBacked"] } else if hoveredAllocKeys == ["fileBacked"] { hoveredAllocKeys = [] } }
-                            LegendItem(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)))
-                                .contentShape(Rectangle())
-                                .onHover { h in if h { hoveredAllocKeys = ["unallocated"] } else if hoveredAllocKeys == ["unallocated"] { hoveredAllocKeys = [] } }
-                        }
+                        // Two layouts only: all six chips on one row when width allows,
+                            // otherwise grouped by master section: Wired pair, then the
+                            // four Available tiers.
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 6) {
+                                    legendChip(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory), keys: ["gpuInUse"])
+                                    legendChip(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)), keys: ["wiredOther"])
+                                    legendChip(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)), keys: ["purgeable"])
+                                    legendChip(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)), keys: ["speculative"])
+                                    legendChip(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)), keys: ["fileBacked"])
+                                    legendChip(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)), keys: ["unallocated"])
+                                }
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(spacing: 6) {
+                                        legendChip(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory), keys: ["gpuInUse"])
+                                        legendChip(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)), keys: ["wiredOther"])
+                                    }
+                                    HStack(spacing: 6) {
+                                        legendChip(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)), keys: ["purgeable"])
+                                        legendChip(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)), keys: ["speculative"])
+                                        legendChip(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)), keys: ["fileBacked"])
+                                        legendChip(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)), keys: ["unallocated"])
+                                    }
+                                }
+                            }
                         .foregroundColor(.secondary)
 
                     }
