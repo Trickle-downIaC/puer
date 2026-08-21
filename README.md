@@ -7,7 +7,9 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 
 ![Puer with all four columns visible](screenshot-full.jpg)
 
-![The Unified Memory column mid model load, the fused allocation history catching the bloom](screenshot-memory.jpg)
+<p align="center">
+  <img src="screenshot-memory.jpg" alt="The Unified Memory column mid model load, the fused allocation history catching the bloom" width="407">
+</p>
 
 ## Features
 
