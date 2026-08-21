@@ -22,7 +22,6 @@ struct MemoryStats {
     let speculativeBytes: UInt64
     let throttledBytes: UInt64
     let swapUsedBytes: UInt64
-    let pressure: Double  // derived from 1 - system-wide free percentage
     let swapInsBytes: UInt64   // cumulative since boot (pages * pageSize)
     let swapOutsBytes: UInt64  // cumulative since boot
     let kernelPressureLevel: Int  // kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical
@@ -131,26 +130,6 @@ func getSwapUsage() -> UInt64 {
     return swap.xsu_used
 }
 
-func getMemoryPressure() -> Double {
-    let pipe = Pipe()
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/usr/bin/memory_pressure")
-    proc.standardOutput = pipe
-    proc.standardError = FileHandle.nullDevice
-    do { try proc.run() } catch { return 0 }
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    proc.waitUntilExit()
-    guard let output = String(data: data, encoding: .utf8) else { return 0 }
-    // Derived from "System-wide memory free percentage: XX%"
-    if let range = output.range(of: "free percentage: ") {
-        let after = output[range.upperBound...]
-        if let pctEnd = after.firstIndex(of: "%"), let pct = Int(after[after.startIndex..<pctEnd]) {
-            return 1.0 - (Double(pct) / 100.0)
-        }
-    }
-    return 0
-}
-
 func readMemoryStats() -> MemoryStats {
     let total = getPhysicalMemory()
     let pageSize = UInt64(vm_kernel_page_size)
@@ -158,7 +137,7 @@ func readMemoryStats() -> MemoryStats {
     guard let vm = getVMStats() else {
         return MemoryStats(totalBytes: total, usedBytes: 0, activeBytes: 0, inactiveBytes: 0,
                            wiredBytes: 0, compressedBytes: 0, freeBytes: total, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0,
-                           swapUsedBytes: 0, pressure: 0,
+                           swapUsedBytes: 0,
                            swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
     }
 
@@ -194,13 +173,12 @@ func readMemoryStats() -> MemoryStats {
     let kernelOther = total > named ? total - named : 0
     let usedApprox = kernelOther + appMem + wired + compressed
     let swap = getSwapUsage()
-    let pressure = getMemoryPressure()
 
     return MemoryStats(
         totalBytes: total, usedBytes: usedApprox, activeBytes: active,
         inactiveBytes: inactive, wiredBytes: wired, compressedBytes: compressed,
         freeBytes: total - usedApprox, appBytes: appMem, freeCountBytes: freeCount, kernelOtherBytes: kernelOther, purgeableBytes: purgeable, speculativeBytes: speculative, throttledBytes: throttled,
-        swapUsedBytes: swap, pressure: pressure,
+        swapUsedBytes: swap,
         swapInsBytes: vm.swapins &* pageSize, swapOutsBytes: vm.swapouts &* pageSize,
         kernelPressureLevel: readKernelPressureLevel()
     )
@@ -446,7 +424,7 @@ func sampleProcesses() -> [RawProc] {
 // MARK: - Monitor
 
 class SystemMonitor: ObservableObject {
-    @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, freeBytes: 0, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0, swapUsedBytes: 0, pressure: 0, swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
+    @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, freeBytes: 0, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0, swapUsedBytes: 0, swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
     @Published var gpuStats = GPUStats(deviceUtilization: 0, rendererUtilization: 0, tilerUtilization: 0, inUseMemory: 0, allocatedMemory: 0, coreCount: 0, model: "")
     @Published var cpuStats = CPUStats(overall: 0, performance: 0, efficiency: 0, perCore: [], performanceCoreCount: 0, efficiencyCoreCount: 0)
     @Published var processes: [ProcessMemory] = []
@@ -737,7 +715,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // "Memory Used" counts purgeable cache and the reserved carveout in Used,
     // which is why it reads above ours and overlaps its own Cached Files.
     out += "used (loose / activity monitor; empirical: strict + purgeable): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB\n"
-    out += "swap used: \(gib(mem.swapUsedBytes)) GiB, pressure: \(pct(mem.pressure))\n"
+    out += "swap used: \(gib(mem.swapUsedBytes)) GiB\n"
     out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
     let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
     let sessionSwapIn = monitor.memoryStats.swapInsBytes > monitor.launchSwapInsBytes ? monitor.memoryStats.swapInsBytes - monitor.launchSwapInsBytes : 0

@@ -31,7 +31,7 @@ Puer uses macOS system interfaces and command-line tools rather than private fra
 - Memory breakdown comes from `host_statistics64(HOST_VM_INFO64)`, using page counters such as active, inactive, wired, compressed, speculative, free, and purgeable.
 - **Available memory** is computed as `total - used`, where used is `total - free - speculative - purgeable`. This avoids double-counting purgeable and inactive pages, which can otherwise inflate the number beyond physical RAM.
 - Swap usage comes from `sysctl vm.swapusage`.
-- Memory pressure is derived from `/usr/bin/memory_pressure` by parsing the reported system-wide free percentage (legacy signal), alongside the kernel's own verdict from `sysctl kern.memorystatus_vm_pressure_level` (1 normal / 2 warn / 4 critical).
+- Memory pressure is the kernel's own verdict from `sysctl kern.memorystatus_vm_pressure_level` (1 normal / 2 warn / 4 critical). The legacy `/usr/bin/memory_pressure` free-percentage figure is deliberately not used: it is a crude free-memory fraction mislabeled as pressure, superseded by the exact Available computation.
 - Thermal state comes from `ProcessInfo.thermalState` and Low Power Mode from `ProcessInfo.isLowPowerModeEnabled`; the configured GPU wired limit from `sysctl iogpu.wired_limit_mb`. When that sysctl is unset, the effective macOS default limit is read from Metal's `recommendedMaxWorkingSetSize` and labeled as the default.
 - Swap in/out rates are computed by diffing the cumulative `vm_statistics64` swap counters between samples. A "pressure event" (kernel level leaving normal, or swap-out exceeding 5 MB/s) is timestamped, and the top per-name footprint *growers* over the preceding refresh window are captured as the causal hint; growth rather than size, because the biggest resident isn't always the cause.
 
@@ -86,7 +86,7 @@ xcodebuild -project Puer.xcodeproj -scheme Puer -configuration Debug build
 
 **Setting an app icon:** in Xcode, open `Assets.xcassets` → `AppIcon` and drop your images into the slots (or provide a single 1024×1024 PNG and let Xcode generate the sizes).
 
-The app deliberately runs **without App Sandbox** because it shells out to `ioreg`, `ps`, and `memory_pressure`.
+The app deliberately runs **without App Sandbox** because it shells out to `ioreg` and `ps`.
 
 ### Quick build without Xcode
 
