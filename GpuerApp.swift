@@ -635,7 +635,7 @@ class SystemMonitor: ObservableObject {
                 self.tilerHistory.append(gpu.tilerUtilization)
                 self.swapInRateHistory.append(inRate)
                 self.swapOutRateHistory.append(outRate)
-                self.swapOnDiskHistory.append(Double(mem.swapUsedBytes) / 1_073_741_824)
+                self.swapOnDiskHistory.append(Double(mem.swapUsedBytes) / UnitScale.gb.divisor)
                 self.pressureLevelHistory.append(mem.kernelPressureLevel)
                 self.thermalHistory.append(thermal.rawValue)
                 self.powerModeHistory.append(lowPower ? 1 : 0)
@@ -2361,7 +2361,7 @@ struct ContentView: View {
                         .background(Color.primary.opacity(0.05))
                         .cornerRadius(8)
                         let inUseCapFrac = Double(inUseCapBytes) / Double(monitor.memoryStats.totalBytes)
-                        let inUseCapGB = Double(inUseCapBytes) / 1_073_741_824
+                        let inUseCapGB = Double(inUseCapBytes) / UnitScale.gb.divisor
                         VStack(alignment: .leading, spacing: 8) {
                             // IN-USE is resident, resident is wired, and wired is capped, so the
                             // wired limit is this chart's true ceiling (fallback: total if unset).
@@ -2621,10 +2621,10 @@ struct ContentView: View {
     }
 
     private var availableGB: Double {
-        Double(monitor.memoryStats.availableBytes) / 1_073_741_824
+        Double(monitor.memoryStats.availableBytes) / UnitScale.gb.divisor
     }
     private var totalGB: Double {
-        Double(monitor.memoryStats.totalBytes) / 1_073_741_824
+        Double(monitor.memoryStats.totalBytes) / UnitScale.gb.divisor
     }
     private var headroomColor: Color {
         let frac = monitor.memoryStats.availableFraction
