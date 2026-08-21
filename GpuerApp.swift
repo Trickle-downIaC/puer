@@ -65,6 +65,7 @@ struct ProcessMemory: Identifiable {
     let pid: Int
     let residentMB: Double
     let cpuPercent: Double  // CPU% over the last sampling window (see readTopProcesses)
+    let growthMB: Double    // footprint change over the last refresh window (~5s)
 }
 
 // Per-process sample before aggregation and recent-CPU computation.
@@ -79,6 +80,7 @@ struct RawProc {
 enum ProcessSortKey: String, CaseIterable {
     case memory = "Memory"
     case cpu = "CPU"
+    case growth = "Growth"
     case name = "Name"
     case pid = "PID"
 }
@@ -598,7 +600,8 @@ class SystemMonitor: ObservableObject {
             let aggregated = agg.map { name, d -> ProcessMemory in
                 let display = d.count > 1 ? "\(name) (\(d.count))" : name
                 return ProcessMemory(id: name, name: display, pid: d.pids.first ?? 0,
-                                     residentMB: d.mb, cpuPercent: d.cpu)
+                                     residentMB: d.mb, cpuPercent: d.cpu,
+                                     growthMB: d.mb - (self.prevAggMB[name] ?? d.mb))
             }
 
             // Top growers since last refresh (~5s): the "what changed" hint for pressure
@@ -623,6 +626,7 @@ class SystemMonitor: ObservableObject {
         switch processSortKey {
         case .memory: sorted = procs.sorted { $0.residentMB > $1.residentMB }
         case .cpu: sorted = procs.sorted { $0.cpuPercent > $1.cpuPercent }
+        case .growth: sorted = procs.sorted { $0.growthMB > $1.growthMB }
         case .name: sorted = procs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         case .pid: sorted = procs.sorted { $0.pid < $1.pid }
         }
@@ -1141,6 +1145,11 @@ struct ProcessRowView: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .lineLimit(1)
                 Spacer()
+                if abs(proc.growthMB) > 50 {
+                    Text(String(format: "%+.0f MB", proc.growthMB))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(proc.growthMB > 0 ? .orange : .teal)
+                }
                 Text(formatMB(proc.residentMB))
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
             }
@@ -1229,7 +1238,7 @@ struct StatusPill: View {
                 .background(color.opacity(0.15))
                 .foregroundColor(color)
                 .cornerRadius(5)
-                .help("\(title): \(state)")
+                .help("\(title): \(state.capitalized)")
         } else {
             HStack(spacing: 4) {
                 Text(title)
@@ -1237,7 +1246,7 @@ struct StatusPill: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .fixedSize()
-                Text(state)
+                Text(state.capitalized)
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize()
@@ -1251,9 +1260,9 @@ struct StatusPill: View {
     }
 }
 
-// Three-state banner: ongoing pressure (red, with swap-out rate and growers),
-// past event this session (orange, with when + what grew), stale residue (quiet gray).
-// The app cannot see events from before its own launch; residue is labeled as such.
+// Pressure-event forensics: growers captured at each event surface in the
+// ledger card's pressure cell and the report; the app cannot see events from
+// before its own launch. The banner UI that once carried this is retired.
 // A labeled full-width trend row: metric name (with units), current value inline,
 // sparkline beneath, optional caption. Replaces the old unlabeled side-by-side charts.
 
@@ -1280,7 +1289,7 @@ struct ContentView: View {
     // Combo-card header: the readout is the graph's own title, so identity is
     // stated exactly once; the window or denominator rides as an annotation.
     @ViewBuilder
-    private func graphHeader(_ label: String, _ value: String, _ color: Color, note: String) -> some View {
+    private func graphHeader(_ label: String, _ value: String, _ color: Color, note: String, valueSize: CGFloat = 20) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
@@ -1296,7 +1305,7 @@ struct ContentView: View {
             }
             Spacer()
             Text(value)
-                .font(.system(size: 20, weight: .bold, design: .monospaced))
+                .font(.system(size: valueSize, weight: .bold, design: .monospaced))
                 .foregroundColor(color)
         }
     }
@@ -1304,40 +1313,6 @@ struct ContentView: View {
     // Bubble quadrant cells: primary (large colored value) and secondary
     // (standard stat), equal-width so the plus hairline's center is the
     // true column boundary.
-    // Quadrant cells double as hover sources: hovering any of the four value
-    // definitions lights its constituent segments in the allocation chart, so
-    // the construction of every headline number is inspectable on sight.
-    @ViewBuilder
-    private func bubblePrimary(_ label: String, _ value: String, _ color: Color, keys: Set<String>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundColor(color)
-                .lineLimit(1)
-        }
-        .fixedSize()
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.08 : 0)))
-        .contentShape(Rectangle())
-        .onHover { h in if h { hoveredAllocKeys = keys } else if hoveredAllocKeys == keys { hoveredAllocKeys = [] } }
-    }
-
-    @ViewBuilder
-    private func bubbleSecondary(_ label: String, _ value: String, keys: Set<String>) -> some View {
-        StatItem(label: label, value: value, color: .secondary)
-            .fixedSize()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.08 : 0)))
-        .contentShape(Rectangle())
-        .onHover { h in if h { hoveredAllocKeys = keys } else if hoveredAllocKeys == keys { hoveredAllocKeys = [] } }
-    }
 
     // Legend chip: a LegendItem in the same hoverable-bubble chrome as the
     // readout row, locked at natural size.
@@ -1493,70 +1468,95 @@ struct ContentView: View {
                             return m < 1 ? "<1 min ago" : "\(m) min ago"
                         } ?? "-"
                         let lastPressureColor: Color = monitor.lastPressureEvent != nil ? .orange : .secondary
-                        VStack(alignment: .leading, spacing: 4) {
-                            VStack(spacing: 0) {
-                                HStack(spacing: 0) {
-                                    bubblePrimary("USED (STRICT)", formatMemory(monitor.memoryStats.usedBytes), headroomColor,
-                                                  keys: ["reserved", "app", "gpuInUse", "wiredOther", "compressed"])
-                                    bubbleSecondary("USED (LOOSE)", usedLooseValue,
-                                                    keys: ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable"])
-                                }
-                                HStack(spacing: 0) {
-                                    bubblePrimary("AVAILABLE", formatMemory(monitor.memoryStats.availableBytes), headroomColor,
-                                                  keys: ["purgeable", "speculative", "fileBacked", "unallocated"])
-                                    bubbleSecondary("TOTAL", formatMemory(monitor.memoryStats.totalBytes),
-                                                    keys: ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable", "speculative", "fileBacked", "unallocated"])
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .overlay {
-                                ZStack {
-                                    Rectangle().fill(Color.black.opacity(0.4)).frame(width: 1).padding(.vertical, 8)
-                                    Rectangle().fill(Color.black.opacity(0.4)).frame(height: 1).padding(.horizontal, 10)
-                                }
-                                .allowsHitTesting(false)
-                            }
-                            // Identity strip: names which of the four numbers the history
-                            // plots, and carries the series' own derived low-water mark.
-                            HStack {
-                                Text("USED (STRICT) \u{00B7} LAST 5 MIN")
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("AVAIL. LOW: \(minAvailValue)")
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 8) {
+                            // The hero in the global grammar at last: standard header,
+                            // Total and the window folded into the note, the value
+                            // prominent and alone top right, hover lighting its segments.
+                            graphHeader("MEMORY USED (STRICT)", formatMemory(monitor.memoryStats.usedBytes), headroomColor,
+                                        note: "of \(formatMemory(monitor.memoryStats.totalBytes)) \u{00B7} last 5 min", valueSize: 22)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] ? 0.10 : 0.05)))
+                                .contentShape(Rectangle())
+                                .onHover { h in if h { hoveredAllocKeys = ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] } else if hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] { hoveredAllocKeys = [] } }
                             SparklineView(data: monitor.memoryHistory, color: headroomColor, maxValue: 1.0,
                                           showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
                                 .frame(height: 60)
-                                .padding(.horizontal, 12)
-                                .padding(.bottom, 10)
                         }
+                        .padding(12)
                         .background(RoundedRectangle(cornerRadius: 8).fill(headroomColor.opacity(0.12)))
-                        // Status card: the kernel's verdict as a power-mode-style pill,
-                        // green when the reclaim economy is healthy.
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("PRESSURE")
+                        // The readout pair: Available and the loose convention side by
+                        // side, cells equalized in height, each carrying its satellite
+                        // note in the fold grammar and its hover into the allocation bar.
+                        HStack(alignment: .top, spacing: 6) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("USED (LOOSE)")
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundColor(.secondary)
-                                HStack(spacing: 5) {
-                                    Circle().fill(pressureColor).frame(width: 6, height: 6)
-                                    Text(kernelPressureName(monitor.memoryStats.kernelPressureLevel))
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .foregroundColor(pressureColor)
-                                }
-                                .padding(.horizontal, 8)
+                                Text(usedLooseValue)
+                                    .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                Text("strict + purgeable (Activity Monitor)")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.secondary.opacity(0.8))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable"] ? 0.10 : 0.05)))
+                            .contentShape(Rectangle())
+                            .onHover { h in if h { hoveredAllocKeys = ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable"] } else if hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed", "purgeable"] { hoveredAllocKeys = [] } }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("AVAILABLE")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                Text(formatMemory(monitor.memoryStats.availableBytes))
+                                    .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                    .foregroundColor(headroomColor)
+                                Text("5-min low: \(minAvailValue)")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.secondary.opacity(0.8))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["purgeable", "speculative", "fileBacked", "unallocated"] ? 0.10 : 0.05)))
+                            .contentShape(Rectangle())
+                            .onHover { h in if h { hoveredAllocKeys = ["purgeable", "speculative", "fileBacked", "unallocated"] } else if hoveredAllocKeys == ["purgeable", "speculative", "fileBacked", "unallocated"] { hoveredAllocKeys = [] } }
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        // The status band: one slim row. Pressure's pill, the event
+                        // clock, then the forensics with the row's remaining width so a
+                        // process name can speak on one line.
+                        HStack(spacing: 8) {
+                            Text("PRESSURE")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Text(kernelPressureName(monitor.memoryStats.kernelPressureLevel).capitalized)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(pressureColor)
+                                .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
                                 .background(Capsule().fill(pressureColor.opacity(0.15)))
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            headlineStat("LAST PRESSURE", lastPressure, lastPressureColor)
+                            Text("LAST EVENT")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 4)
+                            Text(lastPressure)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(lastPressureColor)
+                            Text("GREW BEFORE")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 4)
+                            Text(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", "))
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(10)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
                         .background(Color.primary.opacity(0.05))
                         .cornerRadius(8)
                     }
@@ -1818,7 +1818,7 @@ struct ContentView: View {
                         Text("Overview")
                             .font(.system(size: 13, weight: .semibold))
                         VStack(alignment: .leading, spacing: 8) {
-                            graphHeader("GPU UTILIZATION", "\(monitor.gpuStats.deviceUtilization)%", gpuPurple, note: "last 5 min")
+                            graphHeader("GPU UTILIZATION", "\(monitor.gpuStats.deviceUtilization)%", gpuPurple, note: "last 5 min", valueSize: 22)
                             SparklineView(data: monitor.gpuHistory.map { Double($0) }, color: gpuPurple, maxValue: 100.0,
                                           showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" })
                                 .frame(height: 60)
@@ -1935,7 +1935,7 @@ struct ContentView: View {
                         Text("Overview")
                             .font(.system(size: 13, weight: .semibold))
                         VStack(alignment: .leading, spacing: 8) {
-                            graphHeader("CPU UTILIZATION", "\(Int((monitor.cpuStats.overall * 100).rounded()))%", .blue, note: "last 5 min")
+                            graphHeader("CPU UTILIZATION", "\(Int((monitor.cpuStats.overall * 100).rounded()))%", .blue, note: "last 5 min", valueSize: 22)
                             SparklineView(data: monitor.cpuHistory.map { $0 * 100 }, color: .blue, maxValue: 100.0,
                                           showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" })
                                 .frame(height: 60)
