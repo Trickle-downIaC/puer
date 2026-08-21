@@ -874,14 +874,21 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "P-Core Utilization: \(pct(cpu.performance))\n"
     out += "Per-Core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")) (utilization %, E-cores first)\n"
 
-    out += "\n[PROCESSES] (snapshot; CPU over the last ~4 s window; growth per 4 s refresh; MiB throughout)\n"
+    out += "\n[PROCESSES]\n"
+    // One column layout for both tables (only the sort differs), and one
+    // format string so the layouts cannot drift. Commas separate columns
+    // for machine splitting; the widths keep the human alignment.
+    let procHeader = "    footprint,        growth,        cpu, name\n"
+    let procRow = "\(mibF(9)) MiB, %+6.0f MiB/4s, %5.1f%% CPU, %@\n"
     out += "top by footprint:\n"
+    out += procHeader
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
-        out += String(format: "\(mibF(9)) MiB  %+6.0f MiB/4s  %5.1f%% CPU  %@\n", p.residentMB, p.growthMB, p.cpuPercent, p.name)
+        out += String(format: procRow, p.residentMB, p.growthMB, p.cpuPercent, p.name)
     }
     out += "top by cpu:\n"
+    out += procHeader
     for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
-        out += String(format: "%6.1f%% CPU  \(mibF(9)) MiB  %@\n", p.cpuPercent, p.residentMB, p.name)
+        out += String(format: procRow, p.residentMB, p.growthMB, p.cpuPercent, p.name)
     }
     out += "\n[DEVICE HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
     out += "Thermal State (0 nominal / 1 fair / 2 serious / 3 critical): \(seriesInts(monitor.thermalHistory))\n"
