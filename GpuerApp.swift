@@ -1302,16 +1302,32 @@ struct ContentView: View {
     // Allocation hover: keys of bar segments to outline, driven by the
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
-    // Launch fit state: measured once, posted once.
+    // Launch fit state: corrections converge during a short launch window,
+    // comparing the content's and viewport's BOTTOM EDGES in global space, so
+    // any inset between the measured boxes cancels instead of hiding overflow
+    // (a trailing .padding(.top) after the reporter was exactly such a bug).
+    // The deadline guarantees user resizes are never fought.
     @State private var launchFitContentH: CGFloat = 0
     @State private var launchFitViewportH: CGFloat = 0
-    @State private var launchFitPosted = false
+    @State private var launchFitPassScheduled = false
+    private let launchFitDeadline = Date().addingTimeInterval(3)
 
     private func postLaunchFitIfReady() {
-        guard !launchFitPosted, launchFitContentH > 0, launchFitViewportH > 0 else { return }
-        launchFitPosted = true
-        let deficit = max(0, launchFitContentH - launchFitViewportH)
-        NotificationCenter.default.post(name: .puerLaunchHeightDeficit, object: nil, userInfo: ["deficit": deficit])
+        // Coalesce: both preference callbacks fire in one layout transaction;
+        // posting from each would apply the same deficit twice. One async
+        // evaluation per transaction reads the settled pair exactly once.
+        guard Date() < launchFitDeadline, !launchFitPassScheduled else { return }
+        launchFitPassScheduled = true
+        DispatchQueue.main.async {
+            launchFitPassScheduled = false
+            guard launchFitContentH > 0, launchFitViewportH > 0 else { return }
+            // Fit margin: converge to content plus a few points of slack, so
+            // sub-point rounding can never leave a sliver of overflow that
+            // summons the scroll indicator over otherwise-visible content.
+            let deficit = launchFitContentH + 4 - launchFitViewportH
+            guard deficit > 0.5 else { return }
+            NotificationCenter.default.post(name: .puerLaunchHeightDeficit, object: nil, userInfo: ["deficit": deficit])
+        }
     }
 
     // Headline stat cell: natural-size content in an equal-width frame.
@@ -1837,11 +1853,11 @@ struct ContentView: View {
 
                 }
                 .padding([.horizontal, .bottom], 16)
-                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.size.height) })
+                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.frame(in: .global).maxY) })
                 .padding(.top, 12)
             }
             .frame(minWidth: memoryColMinWidth, idealWidth: memoryColMinWidth, maxWidth: .infinity, maxHeight: .infinity)  // ideal = floor so launch opens at minimum
-            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.size.height) })
+            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.frame(in: .global).maxY) })
             }
 
             if showGPU {
@@ -1955,11 +1971,11 @@ struct ContentView: View {
                     .cornerRadius(10)
                 }
                 .padding([.horizontal, .bottom], 16)
-                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.size.height) })
+                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.frame(in: .global).maxY) })
                 .padding(.top, 12)
             }
             .frame(minWidth: gpuColMinWidth, idealWidth: gpuColMinWidth, maxWidth: .infinity, maxHeight: .infinity)
-            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.size.height) })
+            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.frame(in: .global).maxY) })
             }
 
             if showCPU {
@@ -2016,11 +2032,11 @@ struct ContentView: View {
 
                 }
                 .padding([.horizontal, .bottom], 16)
-                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.size.height) })
+                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.frame(in: .global).maxY) })
                 .padding(.top, 12)
             }
             .frame(minWidth: cpuColMinWidth, idealWidth: cpuColMinWidth, maxWidth: .infinity, maxHeight: .infinity)
-            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.size.height) })
+            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.frame(in: .global).maxY) })
             }
 
             if showProcesses {
@@ -2126,7 +2142,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: .puerLaunchHeightDeficit, object: nil, queue: .main) { [weak self] note in
             guard let self, let d = note.userInfo?["deficit"] as? CGFloat, d > 0 else { return }
             let content = self.window.contentRect(forFrameRect: self.window.frame).size
-            self.window.setContentSize(NSSize(width: content.width, height: content.height + d))
+            let screenCap = ((self.window.screen ?? NSScreen.main)?.visibleFrame.height ?? .greatestFiniteMagnitude) - 40
+            let target = min(content.height + d, screenCap)
+            guard target > content.height + 0.5 else { return }
+            self.window.setContentSize(NSSize(width: content.width, height: target))
             self.window.center()
         }
         window.center()
