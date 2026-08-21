@@ -14,7 +14,6 @@ struct MemoryStats {
     let inactiveBytes: UInt64
     let wiredBytes: UInt64
     let compressedBytes: UInt64
-    let freeBytes: UInt64
     let appBytes: UInt64  // internal minus purgeable, per Activity Monitor
     let freeCountBytes: UInt64
     let kernelOtherBytes: UInt64  // pages in no named queue; AM folds these into Used
@@ -27,7 +26,6 @@ struct MemoryStats {
     let kernelPressureLevel: Int  // kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical
 
     var usedFraction: Double { Double(usedBytes) / Double(max(totalBytes, 1)) }
-    var freeFraction: Double { Double(freeBytes) / Double(max(totalBytes, 1)) }
     var availableBytes: UInt64 { totalBytes - usedBytes }  // exactly the four reclaimable tiers: purgeable + speculative + file-backed + unallocated
     var availableFraction: Double { Double(availableBytes) / Double(max(totalBytes, 1)) }
 }
@@ -136,7 +134,7 @@ func readMemoryStats() -> MemoryStats {
 
     guard let vm = getVMStats() else {
         return MemoryStats(totalBytes: total, usedBytes: 0, activeBytes: 0, inactiveBytes: 0,
-                           wiredBytes: 0, compressedBytes: 0, freeBytes: total, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0,
+                           wiredBytes: 0, compressedBytes: 0, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0,
                            swapUsedBytes: 0,
                            swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
     }
@@ -177,7 +175,7 @@ func readMemoryStats() -> MemoryStats {
     return MemoryStats(
         totalBytes: total, usedBytes: usedApprox, activeBytes: active,
         inactiveBytes: inactive, wiredBytes: wired, compressedBytes: compressed,
-        freeBytes: total - usedApprox, appBytes: appMem, freeCountBytes: freeCount, kernelOtherBytes: kernelOther, purgeableBytes: purgeable, speculativeBytes: speculative, throttledBytes: throttled,
+        appBytes: appMem, freeCountBytes: freeCount, kernelOtherBytes: kernelOther, purgeableBytes: purgeable, speculativeBytes: speculative, throttledBytes: throttled,
         swapUsedBytes: swap,
         swapInsBytes: vm.swapins &* pageSize, swapOutsBytes: vm.swapouts &* pageSize,
         kernelPressureLevel: readKernelPressureLevel()
@@ -424,7 +422,7 @@ func sampleProcesses() -> [RawProc] {
 // MARK: - Monitor
 
 class SystemMonitor: ObservableObject {
-    @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, freeBytes: 0, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0, swapUsedBytes: 0, swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
+    @Published var memoryStats = MemoryStats(totalBytes: 0, usedBytes: 0, activeBytes: 0, inactiveBytes: 0, wiredBytes: 0, compressedBytes: 0, appBytes: 0, freeCountBytes: 0, kernelOtherBytes: 0, purgeableBytes: 0, speculativeBytes: 0, throttledBytes: 0, swapUsedBytes: 0, swapInsBytes: 0, swapOutsBytes: 0, kernelPressureLevel: 1)
     @Published var gpuStats = GPUStats(deviceUtilization: 0, rendererUtilization: 0, tilerUtilization: 0, inUseMemory: 0, allocatedMemory: 0, coreCount: 0, model: "")
     @Published var cpuStats = CPUStats(overall: 0, performance: 0, efficiency: 0, perCore: [], performanceCoreCount: 0, efficiencyCoreCount: 0)
     @Published var processes: [ProcessMemory] = []
@@ -753,9 +751,9 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "gpu util: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
     out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
     out += "gpu mem in-use: \(seriesSummary(monitor.gpuMemHistory))\n"
+    out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
     out += "gpu mem mapped: \(seriesSummary(monitor.gpuMappedHistory))\n"
     out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
-    out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
     out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
     out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
     out += "\n[PROCESSES, recent CPU over ~5s window]\n"
