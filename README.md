@@ -98,4 +98,4 @@ swiftc -parse-as-library -framework SwiftUI -framework AppKit -framework IOKit -
 ./Puer
 ```
 
-Requires macOS and Xcode command line tools (`xcode-select --install`).
+Requires **macOS 14 (Sonoma) or later** on **Apple Silicon (M1 or later, any variant)**, and Xcode command line tools (`xcode-select --install`) to build. The macOS floor comes from the two-parameter `onChange` API; the hardware floor from the `AGXAccelerator` GPU statistics, the `hw.perflevel` core-cluster sysctls, and the `hw.memsize_usable` Reserved derivation, all present on every Apple Silicon Mac and absent or degraded on Intel (which is unsupported: GPU reads Unknown and the core split reads zero).

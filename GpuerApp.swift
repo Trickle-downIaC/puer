@@ -115,6 +115,16 @@ struct ColumnViewportHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 extension Notification.Name { static let puerLaunchHeightDeficit = Notification.Name("PuerLaunchHeightDeficit") }
+extension Notification.Name { static let puerWindowWidthTarget = Notification.Name("PuerWindowWidthTarget") }
+
+// Live column widths, reported by each visible column so toggling off can
+// reclaim the departed column's ACTUAL width, not a floor guess.
+struct ColumnWidthsKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
 
 // MARK: - System Info Helpers
 
@@ -1678,6 +1688,7 @@ struct ContentView: View {
     // Allocation hover: keys of bar segments to outline, driven by the
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
+    @State private var columnWidths: [String: CGFloat] = [:]
     // Allocation chart mode: launches compact (the horizontal bar); the
     // fused 5-minute history is opt-in via the header toggle, so the
     // vertical spend is always a choice. Session-scoped, like column toggles.
@@ -1694,6 +1705,12 @@ struct ContentView: View {
     @State private var launchFitViewportH: CGFloat = 0
     @State private var launchFitPassScheduled = false
     private let launchFitDeadline = Date().addingTimeInterval(3)
+
+    private func columnToggled(_ on: Bool, width: CGFloat?) {
+        var info: [String: CGFloat] = ["floor": minWindowWidth]
+        if !on, let w = width { info["shrinkBy"] = w }
+        NotificationCenter.default.post(name: .puerWindowWidthTarget, object: nil, userInfo: info)
+    }
 
     private func postLaunchFitIfReady() {
         // Coalesce: both preference callbacks fire in one layout transaction;
@@ -1780,129 +1797,9 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func topBar(reportCompact: Bool, infoSegments: Int, togglesCompact: Bool, pillsCompact: Bool,
-                        edgeCompact: Bool = false, showTitle: Bool = true) -> some View {
-        HStack(spacing: 12) {
-            if showTitle {
-                Text("Puer")
-                    .font(.system(size: 18, weight: .bold))
-                    .lineLimit(1)
-                    .fixedSize()
-                Divider()
-                    .frame(height: 16)
-            }
-            HStack(spacing: 6) {
-                ColumnToggle(title: "Unified Memory", icon: "memorychip", compact: togglesCompact, isOn: $showMemory)
-                ColumnToggle(title: "GPU", icon: "cube.transparent", compact: togglesCompact, isOn: $showGPU)
-                ColumnToggle(title: "CPU", icon: "cpu", compact: togglesCompact, isOn: $showCPU)
-                ColumnToggle(title: "Processes", icon: "list.bullet.rectangle", compact: togglesCompact, isOn: $showProcesses)
-            }
-            .padding(3)
-            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
-            Divider()
-                .frame(height: 16)
-            // Puer's own health, placed before the device facts so app state
-            // and machine state read as separate things. Permanent slot (no
-            // disappearing UI): quiet green "passing" at rest, orange with
-            // details on hover if a self-check ever fires.
-            StatusPill(title: "Puer Self-Check", state: selfCheckStateText(monitor.integrityWarnings), icon: "checkmark.seal",
-                       color: monitor.integrityWarnings.isEmpty ? .green : .orange,
-                       compact: pillsCompact)
-                .help(selfCheckDetailText(monitor.integrityWarnings, separator: "\n"))
-            if infoSegments > 0 {
-                Divider()
-                    .frame(height: 16)
-                Text(deviceInfo(segments: infoSegments))
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            Divider()
-                .frame(height: 16)
-            StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState), icon: "thermometer",
-                       color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red),
-                       compact: pillsCompact)
-            Divider()
-                .frame(height: 16)
-            StatusPill(title: "Power", state: powerModeName(monitor.lowPowerMode), icon: "bolt.fill",
-                       color: monitor.lowPowerMode ? .orange : .green,
-                       compact: pillsCompact)
-            Spacer(minLength: 8)
-            Button(action: {
-                copyPerformanceReport(monitor: monitor)
-                reportCopied = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
-            }) {
-                if reportCompact {
-                    Image(systemName: reportCopied ? "checkmark" : "doc.on.clipboard")
-                        .font(.system(size: 12, weight: .medium))
-                } else {
-                    Label(reportCopied ? "Copied" : "Copy Report",
-                          systemImage: reportCopied ? "checkmark" : "doc.on.clipboard")
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-            }
-            .buttonStyle(.bordered)
-            .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
-        }
-        // The 76 reserves the traffic-light zone; the final tiers reclaim it
-        // rather than let the trailing edge clip.
-        .padding(.leading, edgeCompact ? 12 : 76)
-        // 20 not 12: the window's rounded top-right corner intrudes into the
-        // bar's band, and the report button pins to this edge; the flexible
-        // spacer pays for the inset, so no width floor changes.
-        .padding(.trailing, 20)
-        .padding(.vertical, 8)
-    }
-
-    // Device info split into individually collapsible segments, dropped from the
-    // right: [name, CPU, GPU cores].
-    private func deviceInfo(segments: Int) -> String {
-        let parts = [monitor.gpuStats.model,
-                     "\(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU",
-                     "\(monitor.gpuStats.coreCount) GPU cores"]
-        return parts.prefix(segments).joined(separator: " \u{2022} ")
-    }
-
-    private var availableGB: Double {
-        Double(monitor.memoryStats.availableBytes) / 1_073_741_824
-    }
-    private var totalGB: Double {
-        Double(monitor.memoryStats.totalBytes) / 1_073_741_824
-    }
-    private var headroomColor: Color {
-        let frac = monitor.memoryStats.availableFraction
-        if frac > 0.3 { return .green }
-        if frac > 0.15 { return .orange }
-        return .red
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // TOP BAR, responsive. Collapse order as width shrinks: Copy Report label
-            // first, then device info a segment at a time (GPU cores, CPU, name),
-            // and only after all of that do the column toggles drop to icons.
-            ViewThatFits(in: .horizontal) {
-                topBar(reportCompact: false, infoSegments: 3, togglesCompact: false, pillsCompact: false)
-                topBar(reportCompact: true, infoSegments: 3, togglesCompact: false, pillsCompact: false)
-                topBar(reportCompact: true, infoSegments: 2, togglesCompact: false, pillsCompact: false)
-                topBar(reportCompact: true, infoSegments: 1, togglesCompact: false, pillsCompact: false)
-                topBar(reportCompact: true, infoSegments: 0, togglesCompact: false, pillsCompact: false)
-                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: false)
-                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true)
-                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true,
-                       edgeCompact: true)
-                // Last resort, built for a future denser bar: the title goes.
-                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true,
-                       edgeCompact: true, showTitle: false)
-            }
-
-            Divider()
-
-            // HSplitView gives each column a draggable divider so the user can resize sections.
+    // The column split, extracted so the width guard can host it in either
+    // branch without duplicating fifty-three thousand characters of columns.
+    private var columnsSplit: some View {
             HSplitView {
             if showMemory {
             // LEFT COLUMN
@@ -2372,6 +2269,7 @@ struct ContentView: View {
                 .padding(.top, 12)
             }
             .frame(minWidth: memoryColMinWidth, idealWidth: memoryColMinWidth, maxWidth: .infinity, maxHeight: .infinity)  // ideal = floor so launch opens at minimum
+            .background(GeometryReader { cg in Color.clear.preference(key: ColumnWidthsKey.self, value: ["memory": cg.size.width]) })
             .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.frame(in: .global).maxY) })
             }
 
@@ -2503,6 +2401,7 @@ struct ContentView: View {
                 .padding(.top, 12)
             }
             .frame(minWidth: gpuColMinWidth, idealWidth: gpuColMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+            .background(GeometryReader { cg in Color.clear.preference(key: ColumnWidthsKey.self, value: ["gpu": cg.size.width]) })
             .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.frame(in: .global).maxY) })
             }
 
@@ -2565,6 +2464,7 @@ struct ContentView: View {
                 .padding(.top, 12)
             }
             .frame(minWidth: cpuColMinWidth, idealWidth: cpuColMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+            .background(GeometryReader { cg in Color.clear.preference(key: ColumnWidthsKey.self, value: ["cpu": cg.size.width]) })
             .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.frame(in: .global).maxY) })
             }
 
@@ -2624,14 +2524,168 @@ struct ContentView: View {
             .padding([.horizontal, .bottom], 12)
             .padding(.top, 12)
             .frame(minWidth: processesColMinWidth, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            .background(GeometryReader { cg in Color.clear.preference(key: ColumnWidthsKey.self, value: ["processes": cg.size.width]) })
             }
             }
             // Rebuild the splits whenever the visible set changes: HSplitView
             // otherwise restores stale divider offsets from the previous set,
             // which can clip the first column off the left edge.
             .id("\(showMemory)\(showGPU)\(showCPU)\(showProcesses)")
+    }
+
+    private func topBar(reportCompact: Bool, infoSegments: Int, togglesCompact: Bool, pillsCompact: Bool,
+                        edgeCompact: Bool = false, showTitle: Bool = true) -> some View {
+        HStack(spacing: 12) {
+            if showTitle {
+                Text("Puer")
+                    .font(.system(size: 18, weight: .bold))
+                    .lineLimit(1)
+                    .fixedSize()
+                Divider()
+                    .frame(height: 16)
+            }
+            HStack(spacing: 6) {
+                ColumnToggle(title: "Unified Memory", icon: "memorychip", compact: togglesCompact, isOn: $showMemory)
+                ColumnToggle(title: "GPU", icon: "cube.transparent", compact: togglesCompact, isOn: $showGPU)
+                ColumnToggle(title: "CPU", icon: "cpu", compact: togglesCompact, isOn: $showCPU)
+                ColumnToggle(title: "Processes", icon: "list.bullet.rectangle", compact: togglesCompact, isOn: $showProcesses)
+            }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
+            Divider()
+                .frame(height: 16)
+            // Puer's own health, placed before the device facts so app state
+            // and machine state read as separate things. Permanent slot (no
+            // disappearing UI): quiet green "passing" at rest, orange with
+            // details on hover if a self-check ever fires.
+            StatusPill(title: "Puer Self-Check", state: selfCheckStateText(monitor.integrityWarnings), icon: "checkmark.seal",
+                       color: monitor.integrityWarnings.isEmpty ? .green : .orange,
+                       compact: pillsCompact)
+                .help(selfCheckDetailText(monitor.integrityWarnings, separator: "\n"))
+            if infoSegments > 0 {
+                Divider()
+                    .frame(height: 16)
+                Text(deviceInfo(segments: infoSegments))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Divider()
+                .frame(height: 16)
+            StatusPill(title: "Thermal", state: thermalStateName(monitor.thermalState), icon: "thermometer",
+                       color: monitor.thermalState == .nominal ? .green : (monitor.thermalState == .fair ? .yellow : .red),
+                       compact: pillsCompact)
+            Divider()
+                .frame(height: 16)
+            StatusPill(title: "Power", state: powerModeName(monitor.lowPowerMode), icon: "bolt.fill",
+                       color: monitor.lowPowerMode ? .orange : .green,
+                       compact: pillsCompact)
+            Spacer(minLength: 8)
+            Button(action: {
+                copyPerformanceReport(monitor: monitor)
+                reportCopied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reportCopied = false }
+            }) {
+                if reportCompact {
+                    Image(systemName: reportCopied ? "checkmark" : "doc.on.clipboard")
+                        .font(.system(size: 12, weight: .medium))
+                } else {
+                    Label(reportCopied ? "Copied" : "Copy Report",
+                          systemImage: reportCopied ? "checkmark" : "doc.on.clipboard")
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            .buttonStyle(.bordered)
+            .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
+        }
+        // The 76 reserves the traffic-light zone; the final tiers reclaim it
+        // rather than let the trailing edge clip.
+        .padding(.leading, edgeCompact ? 12 : 76)
+        // 20 not 12: the window's rounded top-right corner intrudes into the
+        // bar's band, and the report button pins to this edge; the flexible
+        // spacer pays for the inset, so no width floor changes.
+        .padding(.trailing, 20)
+        .padding(.vertical, 8)
+    }
+
+    // Device info split into individually collapsible segments, dropped from the
+    // right: [name, CPU, GPU cores].
+    private func deviceInfo(segments: Int) -> String {
+        let parts = [monitor.gpuStats.model,
+                     "\(monitor.cpuStats.performanceCoreCount)P/\(monitor.cpuStats.efficiencyCoreCount)E CPU",
+                     "\(monitor.gpuStats.coreCount) GPU cores"]
+        return parts.prefix(segments).joined(separator: " \u{2022} ")
+    }
+
+    private var availableGB: Double {
+        Double(monitor.memoryStats.availableBytes) / 1_073_741_824
+    }
+    private var totalGB: Double {
+        Double(monitor.memoryStats.totalBytes) / 1_073_741_824
+    }
+    private var headroomColor: Color {
+        let frac = monitor.memoryStats.availableFraction
+        if frac > 0.3 { return .green }
+        if frac > 0.15 { return .orange }
+        return .red
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // TOP BAR, responsive. Collapse order as width shrinks: Copy Report label
+            // first, then device info a segment at a time (GPU cores, CPU, name),
+            // and only after all of that do the column toggles drop to icons.
+            ViewThatFits(in: .horizontal) {
+                topBar(reportCompact: false, infoSegments: 3, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 3, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 2, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 1, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: false, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: false)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true,
+                       edgeCompact: true)
+                // Last resort, built for a future denser bar: the title goes.
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true,
+                       edgeCompact: true, showTitle: false)
+            }
+
+            Divider()
+
+            // HSplitView gives each column a draggable divider so the user can resize sections.
+            GeometryReader { g in
+                // Fullscreen guard. In windowed mode a too-narrow window is the
+                // user's to drag wider, but fullscreen pins the window to the
+                // screen, and a small display can be narrower than the visible
+                // columns' summed floors (all four need ~1579 points). With no
+                // drag escape there, the columns become horizontally
+                // scrollable at their honest floors instead of silently
+                // clipping the rightmost column.
+                if g.size.width < minWindowWidth - 0.5 {
+                    ScrollView(.horizontal) {
+                        columnsSplit
+                            .frame(width: minWindowWidth, height: g.size.height)
+                    }
+                } else {
+                    columnsSplit
+                }
+            }
         }
         .onPreferenceChange(ColumnContentHeightKey.self) { h in launchFitContentH = h; postLaunchFitIfReady() }
+        .onPreferenceChange(ColumnWidthsKey.self) { columnWidths = $0 }
+        // Width policy: toggling a column ON keeps the split's native
+        // steal-first behavior (existing columns compress toward floors) and
+        // grows the window only for what stealing cannot cover; toggling OFF
+        // reclaims the departed column's actual width instead of letting the
+        // survivors stretch into it.
+        // Two-parameter onChange: the app's macOS 14 floor lives here.
+        .onChange(of: showMemory) { _, on in columnToggled(on, width: columnWidths["memory"]) }
+        .onChange(of: showGPU) { _, on in columnToggled(on, width: columnWidths["gpu"]) }
+        .onChange(of: showCPU) { _, on in columnToggled(on, width: columnWidths["cpu"]) }
+        .onChange(of: showProcesses) { _, on in columnToggled(on, width: columnWidths["processes"]) }
         .onPreferenceChange(ColumnViewportHeightKey.self) { h in launchFitViewportH = h; postLaunchFitIfReady() }
         // Columns no longer need traffic-light clearance; the top bar carries it.
         // No fixed height floor: with column toggles, the honest minimum is whatever
@@ -2677,6 +2731,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard target > content.height + 0.5 else { return }
             self.window.setContentSize(NSSize(width: content.width, height: target))
             self.window.center()
+        }
+        // Column toggling: grow to the visible floors when stealing cannot
+        // cover a newcomer; shrink by the departed column's width on removal.
+        // Skipped in fullscreen, where the width guard's scrolling governs.
+        NotificationCenter.default.addObserver(forName: .puerWindowWidthTarget, object: nil, queue: .main) { [weak self] note in
+            guard let self, !self.window.styleMask.contains(.fullScreen) else { return }
+            let content = self.window.contentRect(forFrameRect: self.window.frame).size
+            let floor = note.userInfo?["floor"] as? CGFloat ?? 0
+            var target = max(content.width, floor)
+            if let shrink = note.userInfo?["shrinkBy"] as? CGFloat {
+                target = max(floor, content.width - shrink)
+            }
+            if let vis = (self.window.screen ?? NSScreen.main)?.visibleFrame {
+                target = min(target, vis.width)
+            }
+            guard abs(target - content.width) > 0.5 else { return }
+            self.window.setContentSize(NSSize(width: target, height: content.height))
+            if let vis = (self.window.screen ?? NSScreen.main)?.visibleFrame {
+                var f = self.window.frame
+                if f.maxX > vis.maxX { f.origin.x = vis.maxX - f.width }
+                if f.minX < vis.minX { f.origin.x = vis.minX }
+                if f != self.window.frame { self.window.setFrame(f, display: true) }
+            }
         }
         window.center()
         window.isReleasedWhenClosed = false  // closing just hides it; we reopen the same window
