@@ -774,12 +774,6 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     func pct(_ frac: Double) -> String {
         String(format: "%.0f%%", frac * 100)
     }
-    func seriesSummary(_ s: [Double]) -> String {
-        guard !s.isEmpty else { return "n/a" }
-        let mn = s.min() ?? 0, mx = s.max() ?? 0
-        let avg = s.reduce(0, +) / Double(s.count)
-        return "min \(pct(mn)) / avg \(pct(avg)) / max \(pct(mx))"
-    }
     func seriesCompact(_ s: [Double]) -> String {
         s.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")
     }
@@ -820,7 +814,8 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // [MEMORY]: the Unified Memory column top to bottom: hero, pair, band,
     // allocation chips and legend, the accounting identity, then swap.
     out += "\n[MEMORY]\n"
-    out += "Memory Used (Strict): \(gib(mem.usedBytes)) GiB of \(gib(mem.totalBytes)) GiB (reserved + wired + app + compressed)\n"
+    out += "Memory Total: \(gib(mem.totalBytes)) GiB\n"
+    out += "Memory Used (Strict): \(gib(mem.usedBytes)) GiB (reserved + wired + app + compressed)\n"
     // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
     // "Memory Used" counts purgeable cache and the reserved carveout in Used.
     out += "Memory Used (Loose): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB (activity monitor reference value; strict + purgeable)\n"
@@ -828,9 +823,9 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "Available 5-min Low: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB\n"
     out += "Pressure: \(kernelPressureName(mem.kernelPressureLevel))\n"
     if let evt = monitor.lastPressureEvent {
-        out += "Last Event: \(Int(Date().timeIntervalSince(evt) / 60)) min ago this session (time since the most recent kernel pressure elevation)\n"
+        out += "Last Event: \(Int(Date().timeIntervalSince(evt) / 60)) min ago (time since the most recent kernel pressure elevation)\n"
     } else {
-        out += "Last Event: none observed this session (time since the most recent kernel pressure elevation)\n"
+        out += "Last Event: none since launch (time since the most recent kernel pressure elevation)\n"
     }
     out += "Grew Before: \(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", ")) (top process growers just before the last event)\n"
     out += "Reserved: \(gib(mem.kernelOtherBytes)) GiB (hardware and firmware carveouts outside kernel VM management)\n"
@@ -879,42 +874,6 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "P-Core Utilization: \(pct(cpu.performance))\n"
     out += "Per-Core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")) (utilization %, E-cores first)\n"
 
-    out += "\n[MEMORY HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are % of total unless noted)\n"
-    out += "Memory Used (Strict): \(seriesSummary(monitor.memoryHistory))\n"
-    out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
-    out += "Allocation partition, % of total per component:\n"
-    for (i, nm) in allocComponentNames.enumerated() {
-        out += "  \(nm): \(seriesCompact(monitor.allocHistory.map { $0[i] }))\n"
-    }
-    out += "Swap Rate In (MiB/s): \(seriesRaw(monitor.swapInRateHistory))\n"
-    out += "Swap Rate Out (MiB/s): \(seriesRaw(monitor.swapOutRateHistory))\n"
-    out += "Swap On Disk (GiB): \(seriesRaw(monitor.swapOnDiskHistory, "%.\(UnitScale.gb.decimals)f"))\n"
-    out += "Pressure Level (1 normal / 2 warn / 4 critical): \(seriesInts(monitor.pressureLevelHistory))\n"
-
-    out += "\n[GPU HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are % except memory, which is % of total unified)\n"
-    out += "GPU Utilization: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
-    out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
-    out += "Renderer Utilization: \(seriesSummary(monitor.rendererHistory.map { Double($0) / 100.0 }))\n"
-    out += "  series: \(seriesInts(monitor.rendererHistory))\n"
-    out += "Tiler Utilization: \(seriesSummary(monitor.tilerHistory.map { Double($0) / 100.0 }))\n"
-    out += "  series: \(seriesInts(monitor.tilerHistory))\n"
-    out += "GPU Memory In-Use: \(seriesSummary(monitor.gpuMemHistory))\n"
-    out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
-    out += "GPU Memory Mapped: \(seriesSummary(monitor.gpuMappedHistory))\n"
-    out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
-
-    out += "\n[CPU HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are %)\n"
-    out += "CPU Utilization: \(seriesSummary(monitor.cpuHistory))\n"
-    out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
-    out += "E-Core Utilization: \(seriesSummary(monitor.eCoreHistory))\n"
-    out += "  series: \(seriesCompact(monitor.eCoreHistory))\n"
-    out += "P-Core Utilization: \(seriesSummary(monitor.pCoreHistory))\n"
-    out += "  series: \(seriesCompact(monitor.pCoreHistory))\n"
-    out += "(per-core history omitted by design: the cluster series above cover diagnosis; per-core is snapshot-only in [CPU])\n"
-
-    out += "\n[DEVICE HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
-    out += "Thermal State (0 nominal / 1 fair / 2 serious / 3 critical): \(seriesInts(monitor.thermalHistory))\n"
-    out += "Power Mode (0 normal / 1 low power): \(seriesInts(monitor.powerModeHistory))\n"
     out += "\n[PROCESSES] (snapshot; CPU over the last ~4 s window; growth per 4 s refresh; MiB throughout)\n"
     out += "top by footprint:\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
@@ -924,6 +883,36 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
         out += String(format: "%6.1f%% CPU  \(mibF(9)) MiB  %@\n", p.cpuPercent, p.residentMB, p.name)
     }
+    out += "\n[DEVICE HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
+    out += "Thermal State (0 nominal / 1 fair / 2 serious / 3 critical): \(seriesInts(monitor.thermalHistory))\n"
+    out += "Power Mode (0 normal / 1 low power): \(seriesInts(monitor.powerModeHistory))\n"
+    // History sections mirror the snapshot grammar: one line per field, the
+    // unit in the field name, the value a raw comma series (machine-first).
+    // Available and Memory Used (Loose) keep no series by design: both are
+    // exactly derivable (total minus Strict; Strict plus Purgeable) and a
+    // stored copy would only spend memory restating the partition.
+    out += "\n[MEMORY HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
+    out += "Memory Used (Strict) (% of total): \(seriesCompact(monitor.memoryHistory))\n"
+    for (i, nm) in allocComponentNames.enumerated() {
+        out += "\(nm) (% of total): \(seriesCompact(monitor.allocHistory.map { $0[i] }))\n"
+    }
+    out += "Swap Rate In (MiB/s): \(seriesRaw(monitor.swapInRateHistory))\n"
+    out += "Swap Rate Out (MiB/s): \(seriesRaw(monitor.swapOutRateHistory))\n"
+    out += "Swap On Disk (GiB): \(seriesRaw(monitor.swapOnDiskHistory, "%.\(UnitScale.gb.decimals)f"))\n"
+    out += "Pressure Level (1 normal / 2 warn / 4 critical): \(seriesInts(monitor.pressureLevelHistory))\n"
+
+    out += "\n[GPU HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
+    out += "GPU Utilization (%): \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
+    out += "Renderer Utilization (%): \(seriesInts(monitor.rendererHistory))\n"
+    out += "Tiler Utilization (%): \(seriesInts(monitor.tilerHistory))\n"
+    out += "GPU Memory In-Use (% of total): \(seriesCompact(monitor.gpuMemHistory))\n"
+    out += "GPU Memory Mapped (% of total): \(seriesCompact(monitor.gpuMappedHistory))\n"
+
+    out += "\n[CPU HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
+    out += "CPU Utilization (%): \(seriesCompact(monitor.cpuHistory))\n"
+    out += "E-Core Utilization (%): \(seriesCompact(monitor.eCoreHistory))\n"
+    out += "P-Core Utilization (%): \(seriesCompact(monitor.pCoreHistory))\n"
+
     out += "=== END REPORT ===\n"
     return out
 }
