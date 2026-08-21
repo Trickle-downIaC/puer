@@ -1044,11 +1044,11 @@ struct LegendItem: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 1) {
                 Text(label)
-                    .font(.system(size: 10))
+                    .font(.system(size: 9))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .fixedSize()
@@ -1286,9 +1286,13 @@ struct ContentView: View {
                 Text(label)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
-                Text(note)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.8))
+                // An empty note renders nothing at all: Text("") would still
+                // occupy a full line box and pad the header with a phantom line.
+                if !note.isEmpty {
+                    Text(note)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary.opacity(0.8))
+                }
             }
             Spacer()
             Text(value)
@@ -1342,11 +1346,12 @@ struct ContentView: View {
         LegendItem(color: color, label: label, value: value)
             .fixedSize()
             // Natural width is the floor (fixedSize); the frame lets the chip
-            // expand so each row equalizes and fills when space allows.
+            // expand so each row equalizes and fills when space allows. The
+            // tighter, dimmer chrome marks this tier as the readout row's child.
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.10 : 0.05)))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(hoveredAllocKeys == keys ? 0.09 : 0.04)))
             .contentShape(Rectangle())
             .onHover { h in if h { hoveredAllocKeys = keys } else if hoveredAllocKeys == keys { hoveredAllocKeys = [] } }
     }
@@ -1754,36 +1759,6 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
-                    // GPU wired limit: its own tile, a hard driver ceiling distinct
-                    // from the pressure economy; the limit caps GPU wiring only and
-                    // headroom is the at-most bound from GPU In-Use.
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Wired (GPU)")
-                            .font(.system(size: 13, weight: .semibold))
-                        HStack(spacing: 12) {
-                            if monitor.wiredLimitMB > 0 {
-                                let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
-                                let gpuWiredNow = monitor.gpuStats.inUseMemory
-                                let wiredAvail = limitBytes > gpuWiredNow ? limitBytes - gpuWiredNow : 0
-                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                StatItem(label: "GPU WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            } else {
-                                StatItem(label: "GPU WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                StatItem(label: "GPU WIRED LIMIT", value: "macOS default", color: .secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                        .padding(10)
-                        .background(Color.primary.opacity(0.05))
-                        .cornerRadius(8)
-                    }
-                    .padding(16)
-                    .background(Color.primary.opacity(0.03))
-                    .cornerRadius(10)
-
                     // SWAP: overflow out of unified memory onto disk
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Swap (disk overflow)")
@@ -1883,6 +1858,30 @@ struct ContentView: View {
                         Text("Memory claims")
                             .font(.system(size: 13, weight: .semibold))
                         let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : monitor.memoryStats.totalBytes
+                        // The driver's leash, reunited with the graph it caps: the limit
+                        // is the GPU's own parameter (Apple files it under the iogpu
+                        // namespace) and headroom is limit minus In-Use, both GPU-side
+                        // quantities. A parameter governing an actor is not pool state,
+                        // which is why this does not live in the Unified Memory column.
+                        HStack(spacing: 12) {
+                            if monitor.wiredLimitMB > 0 {
+                                let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
+                                let gpuWiredNow = monitor.gpuStats.inUseMemory
+                                let wiredAvail = limitBytes > gpuWiredNow ? limitBytes - gpuWiredNow : 0
+                                StatItem(label: "WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                StatItem(label: "WIRED LIMIT", value: "macOS default", color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .cornerRadius(8)
                         let inUseCapFrac = Double(inUseCapBytes) / Double(monitor.memoryStats.totalBytes)
                         let inUseCapGB = Double(inUseCapBytes) / 1_073_741_824
                         VStack(alignment: .leading, spacing: 8) {

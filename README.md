@@ -9,7 +9,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 
 ## Features
 
-- **"Used (Strict)" headline**, reserved + wired + app + compressed, every tier no reclaim can touch (Available beside it in the status bubble, a Used (Loose) readout beneath, the cache-inclusive convention Activity Monitor and similar monitors report), its five-minute trend, a limits card (GPU wiring against the `iogpu.wired_limit_mb` ceiling, whose headroom is an at-most bound because the limit caps GPU wiring only, beside the live kernel pressure verdict and last-event clock), and an allocation card where the five primary readouts (Reserved, Wired, App per Activity Monitor's internal-minus-purgeable definition, Compressed, Available) caption an exact-partition chart with its cache tiers in the legend
+- **"Used (Strict)" headline**, reserved + wired + app + compressed, every tier no reclaim can touch (Available beside it in the status bubble, a Used (Loose) readout beneath, the cache-inclusive convention Activity Monitor and similar monitors report), its five-minute trend, and an allocation card where the five primary readouts (Reserved, Wired, App per Activity Monitor's internal-minus-purgeable definition, Compressed, Available) caption an exact-partition chart with its cache tiers in the legend
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than displaying as if the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
 - **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
