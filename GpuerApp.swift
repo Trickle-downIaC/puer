@@ -1511,6 +1511,8 @@ struct SortButton: View {
             HStack(spacing: 2) {
                 Text(label)
                     .font(.system(size: 10, weight: currentKey == key ? .bold : .medium))
+                    .lineLimit(1)
+                    .fixedSize()
                 if currentKey == key {
                     Image(systemName: ascending ? "chevron.up" : "chevron.down")
                         .font(.system(size: 8))
@@ -1597,10 +1599,11 @@ struct PerCoreBarsView: View {
 // Column width floors: the single source of truth. Column frames, the window
 // minimum, and the launch width all derive from these; change a floor here and
 // everything follows.
-let memoryColMinWidth: CGFloat = 500  // sized to the five-chip readout row, which never wraps
+let allocChartHeight: CGFloat = 280  // fused history chart: static height, decoupled from the column floor
+let memoryColMinWidth: CGFloat = 515  // sized to the five-chip readout row, which never wraps; was 500 before the units-core rounding (MB 1dp, GB 2dp) widened the swap and chip rows' worst cases, trued to 515 on screen
 let gpuColMinWidth: CGFloat = 402
 let cpuColMinWidth: CGFloat = 402
-let processesColMinWidth: CGFloat = 220
+let processesColMinWidth: CGFloat = 260  // was 220; sized so the five sort headers, active chevron, and Sort prefix fit on one line
 // Launch width: the three launch-visible columns at their floors (Processes launches hidden).
 let windowWidth: CGFloat = memoryColMinWidth + gpuColMinWidth + cpuColMinWidth
 // Launch height before the fit-to-content correction: the layout measures its
@@ -2138,9 +2141,7 @@ struct ContentView: View {
                         // labels in a left gutter, time ticks below.
                         GeometryReader { geo in
                             let w = geo.size.width
-                            // Square-at-the-floor sizing, minus the axis gutters, derived
-                            // from the single-source floor constant.
-                            let chartH: CGFloat = memoryColMinWidth - 64
+                            let chartH: CGFloat = allocChartHeight
                             let barW: CGFloat = 36
                             let gutterW: CGFloat = 26
                             let axisH: CGFloat = 11
@@ -2280,7 +2281,7 @@ struct ContentView: View {
                                 .padding(.top, insetTop)
                             }
                         }
-                        .frame(height: memoryColMinWidth - 64)
+                        .frame(height: allocChartHeight)
                         } else {
                         // The shared partition component, horizontal: the identical
                         // code path as the vertical bar; only orientation differs.
@@ -2583,6 +2584,7 @@ struct ContentView: View {
                     Text("Sort:")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
+                        .fixedSize()
                     ForEach(ProcessSortKey.allCases, id: \.self) { key in
                         SortButton(
                             label: key.rawValue, key: key,
