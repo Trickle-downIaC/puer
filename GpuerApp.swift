@@ -1101,18 +1101,18 @@ struct StatItem: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Never wrap: shrink slightly instead, so label and value each stay on
-            // one line and stat cells keep a shared baseline at any column width.
+            // Never wrap and never shrink: text renders at declared size, and
+            // column floors are sized so every cell fits. Shrink-to-fit hid
+            // sizing bugs by quietly rescaling; the doctrine is fit by design.
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
             Text(value)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(color)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+
         }
     }
 }
@@ -1824,24 +1824,17 @@ struct ContentView: View {
                             let m = Int(Date().timeIntervalSince(d) / 60)
                             return m < 1 ? "<1 min ago" : "\(m) min ago"
                         } ?? "-")
-                        HStack(spacing: 12) {
+                        HStack(spacing: 0) {
+                            // Cells hug content; the flexible gaps between them are
+                            // what compress, down to a 12-point minimum at the floor.
                             StatItem(label: "ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "IN RATE", value: String(format: "%.1f MB/s", monitor.swapInRateMBs), color: .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "OUT RATE", value: String(format: "%.1f MB/s", monitor.swapOutRateMBs), color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .padding(10)
-                        .background(Color.primary.opacity(0.05))
-                        .cornerRadius(8)
-                        HStack(spacing: 12) {
+                            Spacer(minLength: 12)
+                            StatItem(label: "RATE IN / OUT", value: String(format: "%.1f / %.1f MB/s", monitor.swapInRateMBs, monitor.swapOutRateMBs),
+                                     color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
+                            Spacer(minLength: 12)
+                            StatItem(label: "SESSION IN / OUT", value: "\(formatMemory(sessionIn)) / \(formatMemory(sessionOut))", color: .secondary)
+                            Spacer(minLength: 12)
                             StatItem(label: "LAST I/O", value: lastIO, color: swapIOActive ? .orange : .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "SESSION IN", value: formatMemory(sessionIn), color: .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            StatItem(label: "SESSION OUT", value: formatMemory(sessionOut), color: .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .padding(10)
                         .background(Color.primary.opacity(0.05))
