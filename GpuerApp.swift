@@ -826,6 +826,7 @@ struct SparklineView: View {
     let yQuarterLabel: ((Double) -> String)?   // fraction (0.0...1.0) -> short label
     let hoverLabel: ((Double) -> String)?      // fraction -> precise scrub readout
     @State private var hoverX: CGFloat? = nil  // cursor x while scrubbing, local space
+    @State private var hoverY: CGFloat = 0     // cursor y: the value chip rides at the mouse's height
 
     // Fixed x-axis window in grid mode; keep in sync with SystemMonitor.maxHistory
     // (150 samples at 2s). Data anchors to the right edge (now) and grows leftward.
@@ -946,7 +947,7 @@ struct SparklineView: View {
                         .contentShape(Rectangle())
                         .onContinuousHover { phase in
                             switch phase {
-                            case .active(let p): hoverX = p.x
+                            case .active(let p): hoverX = p.x; hoverY = p.y
                             case .ended: hoverX = nil
                             }
                         }
@@ -972,7 +973,8 @@ struct SparklineView: View {
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 1)
                                 .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.10)))
-                                .position(x: min(max(sx, gutterW + 22), w - 22), y: insetTop + 8)
+                                .position(x: min(max(sx, gutterW + 22), w - 22),
+                                          y: min(max(hoverY, insetTop + 8), insetTop + plotH - 8))
                         }
                     }
                 }
@@ -1492,10 +1494,10 @@ struct ContentView: View {
     // Allocation hover: keys of bar segments to outline, driven by the
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
-    // Allocation chart mode: the fused history chart, or the original
-    // horizontal bar for whoever judges the 5-minute view not worth its
-    // vertical spend. Session-scoped, like the column toggles.
-    @State private var allocShowHistory = true
+    // Allocation chart mode: launches compact (the horizontal bar); the
+    // fused 5-minute history is opt-in via the header toggle, so the
+    // vertical spend is always a choice. Session-scoped, like column toggles.
+    @State private var allocShowHistory = false
     // Scrub position over the allocation area chart, local to the canvas.
     @State private var allocScrub: CGPoint? = nil
     // Short names for the dense slice readout, in bar order.
@@ -2000,22 +2002,8 @@ struct ContentView: View {
                                     // system so bar, chips, and legend light up with history.
                                     .onContinuousHover { phase in
                                         switch phase {
-                                        case .active(let p):
-                                            allocScrub = p
-                                            let hist = monitor.allocHistory
-                                            if !hist.isEmpty, areaW > 0, plotH > 0 {
-                                                let n = hist.count
-                                                let age = Double(max(0, 1 - p.x / areaW)) * 300
-                                                let j = max(0, min(n - 1, n - 1 - Int((age / 2.0).rounded())))
-                                                let fb = Double(max(0, min(1, 1 - p.y / plotH)))
-                                                var acc = 0.0
-                                                var band = 8
-                                                for i in 0..<9 { acc += hist[j][i]; if fb < acc { band = i; break } }
-                                                hoveredAllocKeys = [allocKeys[band]]
-                                            }
-                                        case .ended:
-                                            allocScrub = nil
-                                            if hoveredAllocKeys.count == 1, let k = hoveredAllocKeys.first, allocKeys.contains(k) { hoveredAllocKeys = [] }
+                                        case .active(let p): allocScrub = p
+                                        case .ended: allocScrub = nil
                                         }
                                     }
                                     .overlay(alignment: .topLeading) {
@@ -2023,50 +2011,56 @@ struct ContentView: View {
                                         if let pt = allocScrub, !hist.isEmpty, areaW > 0 {
                                             let n = hist.count
                                             let age = Double(max(0, 1 - pt.x / areaW)) * 300
-                                            let j = max(0, min(n - 1, n - 1 - Int((age / 2.0).rounded())))
-                                            let x0 = (areaW * CGFloat(max(0, 1 - Double(n - 1 - j) * 2.0 / 300))).rounded()
-                                            let x1 = j + 1 < n ? (areaW * CGFloat(max(0, 1 - Double(n - 2 - j) * 2.0 / 300))).rounded() : areaW.rounded()
-                                            let cx = ((x0 + x1) / 2).rounded()
-                                            let ageS = (n - 1 - j) * 2
-                                            // Explicit topLeading ZStack: with two views in one
-                                            // overlay, SwiftUI's implicit group centers children,
-                                            // which displaced the 1-point line by half the panel
-                                            // width. Explicit alignment anchors both at origin.
-                                            ZStack(alignment: .topLeading) {
-                                            // The hover hairline, snapped to the sample column.
-                                            Rectangle()
-                                                .fill(Color.primary.opacity(0.25))
-                                                .frame(width: 1, height: plotH)
-                                                .offset(x: cx)
-                                                .allowsHitTesting(false)
-                                            // The slice panel: every component's value at that
-                                            // moment, stacked in the chart's own visual order,
-                                            // the hovered band at full brightness.
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(ageS < 60 ? "-\(ageS)s" : "-\(ageS / 60)m \(ageS % 60)s")
-                                                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                                    .foregroundColor(.secondary)
-                                                ForEach(Array((0..<9).reversed()), id: \.self) { i in
-                                                    HStack(spacing: 4) {
-                                                        RoundedRectangle(cornerRadius: 1)
-                                                            .fill(allocColors[i])
-                                                            .frame(width: 6, height: 6)
-                                                        Text(allocShortNames[i])
-                                                            .font(.system(size: 8))
-                                                            .foregroundColor(hoveredAllocKeys == [allocKeys[i]] ? .primary : .secondary)
-                                                        Spacer(minLength: 6)
-                                                        Text(formatMemory(UInt64(max(0, hist[j][i]) * Double(monitor.memoryStats.totalBytes))))
-                                                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                                                            .foregroundColor(hoveredAllocKeys == [allocKeys[i]] ? .primary : .secondary)
+                                            let j = n - 1 - Int((age / 2.0).rounded())
+                                            // The void before history fills has no samples: no
+                                            // line, no panel, the sparklines' own honesty.
+                                            if j >= 0 && j < n {
+                                                let x0 = (areaW * CGFloat(max(0, 1 - Double(n - 1 - j) * 2.0 / 300))).rounded()
+                                                let x1 = j + 1 < n ? (areaW * CGFloat(max(0, 1 - Double(n - 2 - j) * 2.0 / 300))).rounded() : areaW.rounded()
+                                                let cx = ((x0 + x1) / 2).rounded()
+                                                let ageS = (n - 1 - j) * 2
+                                                // Band under the cursor, for the panel's local
+                                                // emphasis only; the graph never drives the
+                                                // app-wide highlight, which belongs to the bar.
+                                                let fb = Double(max(0, min(1, 1 - pt.y / plotH)))
+                                                let band: Int = {
+                                                    var acc = 0.0
+                                                    for i in 0..<9 { acc += hist[j][i]; if fb < acc { return i } }
+                                                    return 8
+                                                }()
+                                                ZStack(alignment: .topLeading) {
+                                                Rectangle()
+                                                    .fill(Color.primary.opacity(0.25))
+                                                    .frame(width: 1, height: plotH)
+                                                    .offset(x: cx)
+                                                    .allowsHitTesting(false)
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(ageS < 60 ? "-\(ageS)s" : "-\(ageS / 60)m \(ageS % 60)s")
+                                                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                                        .foregroundColor(.secondary)
+                                                    ForEach(Array((0..<9).reversed()), id: \.self) { i in
+                                                        HStack(spacing: 4) {
+                                                            RoundedRectangle(cornerRadius: 1)
+                                                                .fill(allocColors[i])
+                                                                .frame(width: 6, height: 6)
+                                                            Text(allocShortNames[i])
+                                                                .font(.system(size: 8))
+                                                                .foregroundColor(band == i ? .primary : .secondary)
+                                                            Spacer(minLength: 6)
+                                                            Text(formatMemory(UInt64(max(0, hist[j][i]) * Double(monitor.memoryStats.totalBytes))))
+                                                                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                                                .foregroundColor(band == i ? .primary : .secondary)
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            .padding(6)
-                                            .frame(width: 150)
-                                            .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .windowBackgroundColor).opacity(0.92)))
-                                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.15), lineWidth: 1))
-                                            .offset(x: min(max(cx + 8, 4), areaW - 154), y: 6)
-                                            .allowsHitTesting(false)
+                                                .padding(6)
+                                                .frame(width: 150)
+                                                .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .windowBackgroundColor).opacity(0.92)))
+                                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.15), lineWidth: 1))
+                                                .offset(x: min(max(cx + 8, 4), areaW - 154),
+                                                        y: min(max(pt.y + 8, 4), plotH - 122))
+                                                .allowsHitTesting(false)
+                                                }
                                             }
                                         }
                                     }
