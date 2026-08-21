@@ -3,6 +3,7 @@ import AppKit
 import Darwin
 import Foundation
 import IOKit
+import Metal
 
 // MARK: - Data Models
 
@@ -452,6 +453,10 @@ class SystemMonitor: ObservableObject {
     @Published var processSortKey: ProcessSortKey = .memory
     @Published var processSortAscending: Bool = false
     @Published var memoryHistory: [Double] = []  // used fraction
+    // Allocation partition history: each sample is the nine bar segments as
+    // fractions of total, in bar order (reserved, gpuInUse, wiredOther, app,
+    // compressed, purgeable, speculative, fileBacked, unallocated).
+    @Published var allocHistory: [[Double]] = []
     @Published var gpuHistory: [Int] = []  // device utilization %
     @Published var gpuMemHistory: [Double] = []  // in-use GPU memory fraction
     @Published var gpuMappedHistory: [Double] = []  // GPU-mapped memory fraction
@@ -482,6 +487,10 @@ class SystemMonitor: ObservableObject {
     var launchSwapOutsBytes: UInt64 = 0
     var launchSwapInsBytes: UInt64 = 0
     @Published var lastSwapIODate: Date? = nil  // last moment either swap rate was nonzero
+    // Effective GPU wired limit when iogpu.wired_limit_mb is unset: Metal's
+    // recommendedMaxWorkingSetSize is the macOS default ceiling. Public API,
+    // no elevation; 0 only where no Metal device exists (non-AGX fallback).
+    let defaultWiredLimitBytes: UInt64 = MTLCreateSystemDefaultDevice().map { UInt64($0.recommendedMaxWorkingSetSize) } ?? 0
     let wiredLimitMB: Int = {  // iogpu.wired_limit_mb; 0 means macOS default (unset)
         var v: Int = 0
         var sz = MemoryLayout<Int>.size
@@ -523,8 +532,14 @@ class SystemMonitor: ObservableObject {
     func refresh() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
-            let mem = readMemoryStats()
+            // GPU first: readGPUStats shells out to ioreg (50-200ms), while the
+            // memory syscall is instant. Sampling memory AFTER the subprocess
+            // returns puts the two snapshots milliseconds apart instead of the
+            // full subprocess latency apart; during fast model loads that skew
+            // was large enough for the driver's in-use counter to exceed the
+            // stale wired total and falsely zero the Non-GPU wired bucket.
             let gpu = readGPUStats()
+            let mem = readMemoryStats()
             let currTicks = readPerCoreTicks()
             let cpu = computeCPUStats(prev: self.prevCPUTicks, curr: currTicks)
             if !currTicks.isEmpty { self.prevCPUTicks = currTicks }
@@ -560,6 +575,22 @@ class SystemMonitor: ObservableObject {
 
                 self.memoryHistory.append(mem.usedFraction)
                 if self.memoryHistory.count > self.maxHistory { self.memoryHistory.removeFirst() }
+
+                // Allocation partition sample, same math as the bar's segments.
+                let tD = Double(max(mem.totalBytes, 1))
+                // Coherence clamp: a partition segment cannot exceed its parent
+                // bucket; residual cross-source skew caps at the wired total
+                // instead of silently zeroing the Non-GPU remainder.
+                let gpuA = min(Double(gpu.inUseMemory), Double(mem.wiredBytes))
+                let wOther = max(0, Double(mem.wiredBytes) - gpuA)
+                let fileB = max(0, Double(mem.activeBytes) + Double(mem.inactiveBytes) - Double(mem.appBytes) - Double(mem.purgeableBytes))
+                self.allocHistory.append([
+                    Double(mem.kernelOtherBytes) / tD, gpuA / tD, wOther / tD,
+                    Double(mem.appBytes) / tD, Double(mem.compressedBytes) / tD,
+                    Double(mem.purgeableBytes) / tD, Double(mem.speculativeBytes) / tD,
+                    fileB / tD, Double(mem.freeCountBytes + mem.throttledBytes) / tD
+                ])
+                if self.allocHistory.count > self.maxHistory { self.allocHistory.removeFirst() }
 
                 self.gpuHistory.append(gpu.deviceUtilization)
                 if self.gpuHistory.count > self.maxHistory { self.gpuHistory.removeFirst() }
@@ -716,6 +747,10 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
         out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB gpu wired limit; headroom at most \(gib(headroom)) GiB (limit caps gpu wiring only)\n"
+    } else if monitor.defaultWiredLimitBytes > 0 {
+        let limitBytes = monitor.defaultWiredLimitBytes
+        let headroom = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
+        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB gpu wired limit (macOS default via Metal recommendedMaxWorkingSetSize; iogpu.wired_limit_mb unset); headroom at most \(gib(headroom)) GiB\n"
     } else {
         out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
     }
@@ -1016,6 +1051,9 @@ struct SpanOutline: Shape {
     var radius: CGFloat  // corner radius of the full bar outline
     var x0: CGFloat      // span cut positions in the full outline's coordinates
     var x1: CGFloat
+    // Vertical use: the bar renders horizontally and rotates -90, so its
+    // bar-local TOP side becomes the axis-facing left side, which is square.
+    var squareTop: Bool = false
 
     func path(in rect: CGRect) -> Path {
         let r = min(radius, rect.height / 2)
@@ -1034,6 +1072,48 @@ struct SpanOutline: Shape {
         }
         let aFlat = a >= r && a <= W - r
         let bFlat = b >= r && b <= W - r
+        if squareTop {
+            // Square-top variant: the top edge runs flat at y=0 across the full
+            // width (only cut-corner rounding), while the bottom keeps the full
+            // corner arcs; used by the vertical bar via rotation.
+            var p = Path()
+            if q > 0 {
+                p.move(to: CGPoint(x: a, y: q))
+                p.addArc(center: CGPoint(x: a + q, y: q), radius: q,
+                         startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+                p.addLine(to: CGPoint(x: b - q, y: 0))
+                p.addArc(center: CGPoint(x: b - q, y: q), radius: q,
+                         startAngle: .degrees(270), endAngle: .degrees(0), clockwise: false)
+            } else {
+                p.move(to: CGPoint(x: a, y: 0))
+                p.addLine(to: CGPoint(x: b, y: 0))
+            }
+            p.addLine(to: CGPoint(x: b, y: (bFlat && q > 0) ? H - q : H - topY(b)))
+            if bFlat {
+                if q > 0 {
+                    p.addArc(center: CGPoint(x: b - q, y: H - q), radius: q,
+                             startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+                }
+            } else if b > W - r {
+                let s = max(a, W - r)
+                p.addArc(center: CGPoint(x: W - r, y: H - r), radius: r,
+                         startAngle: ang(W - r, H - r, b, H - topY(b)), endAngle: ang(W - r, H - r, s, H - topY(s)), clockwise: false)
+            }
+            if aFlat {
+                p.addLine(to: CGPoint(x: a + q, y: H))
+                if q > 0 {
+                    p.addArc(center: CGPoint(x: a + q, y: H - q), radius: q,
+                             startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+                }
+            } else if a < r {
+                if b > r { p.addLine(to: CGPoint(x: r, y: H)) }
+                let e = min(b, r)
+                p.addArc(center: CGPoint(x: r, y: H - r), radius: r,
+                         startAngle: ang(r, H - r, e, H - topY(e)), endAngle: ang(r, H - r, a, H - topY(a)), clockwise: false)
+            }
+            p.closeSubpath()
+            return p
+        }
         var p = Path()
         // Left cut, top side
         if aFlat && q > 0 {
@@ -1095,6 +1175,71 @@ struct SpanOutline: Shape {
     }
 }
 
+
+// The partition bar, orientation-agnostic: horizontal in compact mode,
+// vertical in the fused history chart, one code path. Boundaries are rounded
+// cumulative cuts (integer joints, deltas summing exactly to length), with
+// no liveness floors anywhere: accuracy is paramount and both orientations
+// must render the identical geometry. The hover outline is the same
+// SpanOutline in both worlds, rotated for the vertical case, so corner
+// rounding matches the horizontal original as closely as one shape can.
+struct PartitionBarView: View {
+    let vertical: Bool
+    let length: CGFloat     // dimension along the partition
+    let thickness: CGFloat  // dimension across it
+    let fracs: [Double]
+    let keys: [String]
+    let colors: [Color]
+    @Binding var hoveredAllocKeys: Set<String>
+
+    var body: some View {
+        let bnd: (Int) -> CGFloat = { i in (length * CGFloat(fracs.prefix(i).reduce(0, +))).rounded() }
+        let sFor: (Int) -> CGFloat = { i in max(0, bnd(i + 1) - bnd(i)) }
+        return Group {
+            if vertical {
+                // Reserved at the bottom: bar order reversed top-to-bottom.
+                VStack(spacing: 0) {
+                    ForEach(Array((0..<keys.count).reversed()), id: \.self) { i in segment(i).frame(height: sFor(i)) }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    ForEach(Array(0..<keys.count), id: \.self) { i in segment(i).frame(width: sFor(i)) }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .frame(width: vertical ? thickness : length, height: vertical ? length : thickness)
+        .background(Color.primary.opacity(0.06))
+        // Orientation-needed difference: the vertical bar's left side faces the
+        // zero-second axis and fuses square; its right side keeps the rounding.
+        .clipShape(vertical
+            ? AnyShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 6, topTrailingRadius: 6))
+            : AnyShape(RoundedRectangle(cornerRadius: 6)))
+        .overlay(alignment: .topLeading) {
+            if !hoveredAllocKeys.isEmpty {
+                let idxs = (0..<keys.count).filter { hoveredAllocKeys.contains(keys[$0]) }
+                if let lo = idxs.min(), let hi = idxs.max() {
+                    let off: CGFloat = 0.5
+                    SpanOutline(radius: 6 + off, x0: bnd(lo), x1: bnd(hi + 1) + 2 * off, squareTop: vertical)
+                        .stroke(Color.white, lineWidth: 2.0)
+                        .frame(width: length + 2 * off, height: thickness + 2 * off)
+                        .rotationEffect(.degrees(vertical ? -90 : 0))
+                        .offset(x: vertical ? (thickness - length) / 2 - off : -off,
+                                y: vertical ? (length - thickness) / 2 - off : -off)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
+    private func segment(_ i: Int) -> some View {
+        Rectangle()
+            .fill(colors[i])
+            .contentShape(Rectangle())
+            .onHover { h in if h { hoveredAllocKeys = [keys[i]] } else if hoveredAllocKeys == [keys[i]] { hoveredAllocKeys = [] } }
+    }
+}
 
 // Allocation-legend entry: swatch beside a label-over-value stack. The fixed
 // two-line shape is the standardized return; labels never wrap mid-phrase.
@@ -1347,6 +1492,14 @@ struct ContentView: View {
     // Allocation hover: keys of bar segments to outline, driven by the
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
+    // Allocation chart mode: the fused history chart, or the original
+    // horizontal bar for whoever judges the 5-minute view not worth its
+    // vertical spend. Session-scoped, like the column toggles.
+    @State private var allocShowHistory = true
+    // Scrub position over the allocation area chart, local to the canvas.
+    @State private var allocScrub: CGPoint? = nil
+    // Short names for the dense slice readout, in bar order.
+    private let allocShortNames = ["Reserved", "Wired \u{00B7} GPU In-Use", "Wired \u{00B7} other", "App", "Compressed", "Purgeable", "Speculative", "File-backed", "Unallocated"]
     // Launch fit state: corrections converge during a short launch window,
     // comparing the content's and viewport's BOTTOM EDGES in global space, so
     // any inset between the measured boxes cancels instead of hiding overflow
@@ -1682,8 +1835,20 @@ struct ContentView: View {
 
                     // UNIFIED MEMORY POOL
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Allocation details")
-                            .font(.system(size: 13, weight: .semibold))
+                        HStack {
+                            Text("Allocation details")
+                                .font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            Button(action: { allocShowHistory.toggle() }) {
+                                Image(systemName: allocShowHistory ? "rectangle.split.3x1" : "chart.bar.xaxis")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .padding(4)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.05)))
+                            }
+                            .buttonStyle(.plain)
+                            .help(allocShowHistory ? "Switch to the compact bar" : "Switch to the 5-minute history view")
+                        }
 
                         // The five primary readouts head the card they caption; the chart
                         // and its cache-tier legend follow.
@@ -1731,7 +1896,9 @@ struct ContentView: View {
                         }
 
                         let total = Double(max(monitor.memoryStats.totalBytes, 1))
-                        let gpuActive = Double(monitor.gpuStats.inUseMemory)
+                        // Coherence clamp for the partition (chips and legend still show
+                        // the driver's raw counter): see the sampler's matching clamp.
+                        let gpuActive = min(Double(monitor.gpuStats.inUseMemory), Double(monitor.memoryStats.wiredBytes))
                         // Wired splits into exactly two measurable parts: GPU In-Use
                         // (driver counter; actively-worked GPU memory is pinned by nature)
                         // and everything else that is pinned. A finer GPU-vs-OS attribution
@@ -1748,98 +1915,185 @@ struct ContentView: View {
                         let fileCacheB = max(0, Double(monitor.memoryStats.activeBytes) + Double(monitor.memoryStats.inactiveBytes) - Double(monitor.memoryStats.appBytes) - purgeableB)
                         let kernelRemB = Double(monitor.memoryStats.kernelOtherBytes)
                         let unallocatedB = Double(monitor.memoryStats.freeCountBytes + monitor.memoryStats.throttledBytes)
+                        // Shared partition inputs: both chart modes read these; the bar
+                        // component and the area canvas can never disagree on them.
+                        let allocKeys = ["reserved", "gpuInUse", "wiredOther", "app", "compressed", "purgeable", "speculative", "fileBacked", "unallocated"]
+                        let allocColors: [Color] = [reservedBrown, gpuPurple, gpuPurpleDark, .blue, .orange,
+                                                    Color.gray.opacity(0.42), Color.gray.opacity(0.32), Color.gray.opacity(0.22), Color.gray.opacity(0.10)]
+                        let fracs: [Double] = [kernelRemB / total, gpuActive / total, wiredOther / total,
+                                               appUsed / total, compUsed / total, purgeableB / total,
+                                               speculativeB / total, fileCacheB / total, unallocatedB / total]
 
-                        // Thick unified bar
+                        if allocShowHistory {
+                        // The partition, now and over time: a 100% stacked area chart
+                        // of all nine components across the 5-minute window (right edge
+                        // is now, matching the sparklines), fused at the zero-second
+                        // axis into the live partition bar, vertical, Reserved at the
+                        // bottom. Axes speak the sparkline grammar: 7-point quarter
+                        // labels in a left gutter, time ticks below.
                         GeometryReader { geo in
                             let w = geo.size.width
-                            HStack(spacing: 0) {
-                                // Kernel remainder first: pinned, unreclaimable, uninfluenceable,
-                                // so maximally far from Available. Then App, the wired family,
-                                // Compressed, and the reclaimable grey ladder.
-                                Rectangle()
-                                    .fill(reservedBrown)
-                                    .frame(width: max(0, w * CGFloat(kernelRemB / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["reserved"] } else if hoveredAllocKeys == ["reserved"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(gpuPurple)
-                                    .frame(width: max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["gpuInUse"] } else if hoveredAllocKeys == ["gpuInUse"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(gpuPurpleDark)
-                                    .frame(width: max(0, w * CGFloat(wiredOther / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["wiredOther"] } else if hoveredAllocKeys == ["wiredOther"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(Color.blue)
-                                    .frame(width: max(0, w * CGFloat(appUsed / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(Color.orange)
-                                    .frame(width: max(0, w * CGFloat(compUsed / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["compressed"] } else if hoveredAllocKeys == ["compressed"] { hoveredAllocKeys = [] } }
-                                // Available tiers in a grey ladder
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.42))
-                                    .frame(width: max(0, w * CGFloat(purgeableB / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["purgeable"] } else if hoveredAllocKeys == ["purgeable"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.32))
-                                    .frame(width: max(0, w * CGFloat(speculativeB / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["speculative"] } else if hoveredAllocKeys == ["speculative"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.22))
-                                    .frame(width: max(0, w * CGFloat(fileCacheB / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["fileBacked"] } else if hoveredAllocKeys == ["fileBacked"] { hoveredAllocKeys = [] } }
-                                Rectangle()
-                                    .fill(Color.gray.opacity(0.10))
-                                    .frame(width: max(0, w * CGFloat(unallocatedB / total)))
-                                    .contentShape(Rectangle())
-                                    .onHover { h in if h { hoveredAllocKeys = ["unallocated"] } else if hoveredAllocKeys == ["unallocated"] { hoveredAllocKeys = [] } }
-                                Spacer(minLength: 0)
-                            }
-                            .frame(height: 36)
-                            .background(Color.primary.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            // Hover outline: one border around the hovered span, drawn after
-                            // the clip so it is never shaved, expanded to sit outside the
-                            // sections, following the bar's corners at the ends.
-                            .overlay(alignment: .topLeading) {
-                                if !hoveredAllocKeys.isEmpty {
-                                    let widths: [(String, CGFloat)] = [
-                                        ("reserved", max(0, w * CGFloat(kernelRemB / total))),
-                                        ("gpuInUse", max(gpuActive > 0 ? 2 : 0, w * CGFloat(gpuActive / total))),
-                                        ("wiredOther", max(0, w * CGFloat(wiredOther / total))),
-                                        ("app", max(0, w * CGFloat(appUsed / total))),
-                                        ("compressed", max(0, w * CGFloat(compUsed / total))),
-                                        ("purgeable", max(0, w * CGFloat(purgeableB / total))),
-                                        ("speculative", max(0, w * CGFloat(speculativeB / total))),
-                                        ("fileBacked", max(0, w * CGFloat(fileCacheB / total))),
-                                        ("unallocated", max(0, w * CGFloat(unallocatedB / total)))
-                                    ]
-                                    let startX = widths.prefix(while: { !hoveredAllocKeys.contains($0.0) }).reduce(CGFloat(0)) { $0 + $1.1 }
-                                    let spanW = widths.filter { hoveredAllocKeys.contains($0.0) }.reduce(CGFloat(0)) { $0 + $1.1 }
-                                    // Asymmetric coverage: a 2-point stroke with its centerline
-                                    // half a point outside the boundary puts the outer edge at
-                                    // the original position while the inner edge reaches half a
-                                    // point inside, covering section antialiasing seams and the
-                                    // sections' sharp corners at rounded cuts alike.
-                                    let off: CGFloat = 0.5
-                                    SpanOutline(radius: 6 + off, x0: startX, x1: startX + spanW + 2 * off)
-                                        .stroke(Color.white, lineWidth: 2.0)
-                                        .frame(width: w + 2 * off, height: 36 + 2 * off)
-                                        .offset(x: -off, y: -off)
-                                        .allowsHitTesting(false)
+                            // Square-at-the-floor sizing, minus the axis gutters, derived
+                            // from the single-source floor constant.
+                            let chartH: CGFloat = memoryColMinWidth - 64
+                            let barW: CGFloat = 36
+                            let gutterW: CGFloat = 26
+                            let axisH: CGFloat = 11
+                            let insetTop: CGFloat = 5
+                            let plotH = chartH - axisH - insetTop
+                            let areaW = w - gutterW - barW - 1
+                            ZStack(alignment: .topLeading) {
+                                // Y-axis unit labels: quarters of total, sparkline grammar.
+                                ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { f in
+                                    Text(String(format: "%.0fG", f * totalGB))
+                                        .font(.system(size: 7))
+                                        .foregroundColor(.secondary.opacity(0.7))
+                                        .position(x: gutterW / 2, y: insetTop + plotH * CGFloat(1 - f))
                                 }
+                                // Time ticks: the sparklines' 300-second window picks the
+                                // 120-second interval, so the shared vocabulary is -2m, -4m.
+                                ForEach([120.0, 240.0], id: \.self) { t in
+                                    Text("-\(Int(t / 60))m")
+                                        .font(.system(size: 7))
+                                        .foregroundColor(.secondary.opacity(0.7))
+                                        .position(x: gutterW + areaW * CGFloat(1 - t / 300), y: chartH - axisH / 2)
+                                }
+                                HStack(spacing: 0) {
+                                    Canvas { ctx, size in
+                                        let hist = monitor.allocHistory
+                                        let n = hist.count
+                                        guard n > 0 else { return }
+                                        // Integer column boundaries from the age mapping: each
+                                        // poll owns [xb(j), xb(j+1)) and holds its value across
+                                        // it (step semantics, honest for sampled data). Column
+                                        // widths differ by at most one point where the division
+                                        // does not come out even: the nearest-full-pixel
+                                        // approximation, never a blended edge.
+                                        let xb: (Int) -> CGFloat = { j in
+                                            let age = Double(n - 1 - j) * 2.0
+                                            return (areaW * CGFloat(max(0, 1 - age / 300))).rounded()
+                                        }
+                                        for j in 0..<n {
+                                            let x0 = xb(j)
+                                            let x1 = j + 1 < n ? xb(j + 1) : areaW.rounded()
+                                            guard x1 > x0 else { continue }
+                                            var acc: Double = 0
+                                            var yPrev = size.height
+                                            for i in 0..<9 {
+                                                acc += hist[j][i]
+                                                let yTop = size.height - (size.height * CGFloat(min(1, acc))).rounded()
+                                                if yPrev - yTop > 0 {
+                                                    ctx.fill(Path(CGRect(x: x0, y: yTop, width: x1 - x0, height: yPrev - yTop)),
+                                                             with: .color(allocColors[i]))
+                                                }
+                                                yPrev = yTop
+                                            }
+                                        }
+                                    }
+                                    .frame(width: max(0, areaW), height: plotH)
+                                    .background(Color.primary.opacity(0.03))
+                                    // The area's outer left edge rounds like every card
+                                    // surface; its right edge stays square into the axis.
+                                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 6, bottomTrailingRadius: 0, topTrailingRadius: 0))
+                                    // Scrub: track the cursor, snap to the sample column, and
+                                    // put the band under the cursor into the app-wide hover
+                                    // system so bar, chips, and legend light up with history.
+                                    .onContinuousHover { phase in
+                                        switch phase {
+                                        case .active(let p):
+                                            allocScrub = p
+                                            let hist = monitor.allocHistory
+                                            if !hist.isEmpty, areaW > 0, plotH > 0 {
+                                                let n = hist.count
+                                                let age = Double(max(0, 1 - p.x / areaW)) * 300
+                                                let j = max(0, min(n - 1, n - 1 - Int((age / 2.0).rounded())))
+                                                let fb = Double(max(0, min(1, 1 - p.y / plotH)))
+                                                var acc = 0.0
+                                                var band = 8
+                                                for i in 0..<9 { acc += hist[j][i]; if fb < acc { band = i; break } }
+                                                hoveredAllocKeys = [allocKeys[band]]
+                                            }
+                                        case .ended:
+                                            allocScrub = nil
+                                            if hoveredAllocKeys.count == 1, let k = hoveredAllocKeys.first, allocKeys.contains(k) { hoveredAllocKeys = [] }
+                                        }
+                                    }
+                                    .overlay(alignment: .topLeading) {
+                                        let hist = monitor.allocHistory
+                                        if let pt = allocScrub, !hist.isEmpty, areaW > 0 {
+                                            let n = hist.count
+                                            let age = Double(max(0, 1 - pt.x / areaW)) * 300
+                                            let j = max(0, min(n - 1, n - 1 - Int((age / 2.0).rounded())))
+                                            let x0 = (areaW * CGFloat(max(0, 1 - Double(n - 1 - j) * 2.0 / 300))).rounded()
+                                            let x1 = j + 1 < n ? (areaW * CGFloat(max(0, 1 - Double(n - 2 - j) * 2.0 / 300))).rounded() : areaW.rounded()
+                                            let cx = ((x0 + x1) / 2).rounded()
+                                            let ageS = (n - 1 - j) * 2
+                                            // Explicit topLeading ZStack: with two views in one
+                                            // overlay, SwiftUI's implicit group centers children,
+                                            // which displaced the 1-point line by half the panel
+                                            // width. Explicit alignment anchors both at origin.
+                                            ZStack(alignment: .topLeading) {
+                                            // The hover hairline, snapped to the sample column.
+                                            Rectangle()
+                                                .fill(Color.primary.opacity(0.25))
+                                                .frame(width: 1, height: plotH)
+                                                .offset(x: cx)
+                                                .allowsHitTesting(false)
+                                            // The slice panel: every component's value at that
+                                            // moment, stacked in the chart's own visual order,
+                                            // the hovered band at full brightness.
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(ageS < 60 ? "-\(ageS)s" : "-\(ageS / 60)m \(ageS % 60)s")
+                                                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                                    .foregroundColor(.secondary)
+                                                ForEach(Array((0..<9).reversed()), id: \.self) { i in
+                                                    HStack(spacing: 4) {
+                                                        RoundedRectangle(cornerRadius: 1)
+                                                            .fill(allocColors[i])
+                                                            .frame(width: 6, height: 6)
+                                                        Text(allocShortNames[i])
+                                                            .font(.system(size: 8))
+                                                            .foregroundColor(hoveredAllocKeys == [allocKeys[i]] ? .primary : .secondary)
+                                                        Spacer(minLength: 6)
+                                                        Text(formatMemory(UInt64(max(0, hist[j][i]) * Double(monitor.memoryStats.totalBytes))))
+                                                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                                            .foregroundColor(hoveredAllocKeys == [allocKeys[i]] ? .primary : .secondary)
+                                                    }
+                                                }
+                                            }
+                                            .padding(6)
+                                            .frame(width: 150)
+                                            .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .windowBackgroundColor).opacity(0.92)))
+                                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.15), lineWidth: 1))
+                                            .offset(x: min(max(cx + 8, 4), areaW - 154), y: 6)
+                                            .allowsHitTesting(false)
+                                            }
+                                        }
+                                    }
+                                    // The zero-second axis: the seam where history becomes now.
+                                    Rectangle()
+                                        .fill(Color.primary.opacity(0.35))
+                                        .frame(width: 1, height: plotH)
+                                    // BAR: the shared partition component, vertical.
+                                    PartitionBarView(vertical: true, length: plotH, thickness: barW,
+                                                     fracs: fracs, keys: allocKeys, colors: allocColors,
+                                                     hoveredAllocKeys: $hoveredAllocKeys)
+                                }
+                                .padding(.leading, gutterW)
+                                .padding(.top, insetTop)
                             }
                         }
+                        .frame(height: memoryColMinWidth - 64)
+                        } else {
+                        // The shared partition component, horizontal: the identical
+                        // code path as the vertical bar; only orientation differs.
+                        GeometryReader { geo in
+                            PartitionBarView(vertical: false, length: geo.size.width, thickness: 36,
+                                             fracs: fracs, keys: allocKeys, colors: allocColors,
+                                             hoveredAllocKeys: $hoveredAllocKeys)
+                        }
                         .frame(height: 36)
+                        }
 
                         // Legend
                         // Two layouts only: all six chips on one row when width allows,
@@ -1976,7 +2230,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Memory budget")
                             .font(.system(size: 13, weight: .semibold))
-                        let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : monitor.memoryStats.totalBytes
+                        let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : (monitor.defaultWiredLimitBytes > 0 ? monitor.defaultWiredLimitBytes : monitor.memoryStats.totalBytes)
                         // The driver's leash, reunited with the graph it caps: the limit
                         // is the GPU's own parameter (Apple files it under the iogpu
                         // namespace) and headroom is limit minus In-Use, both GPU-side
@@ -1990,6 +2244,15 @@ struct ContentView: View {
                                 StatItem(label: "WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 StatItem(label: "WIRED LIMIT", value: formatMemory(limitBytes), color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else if monitor.defaultWiredLimitBytes > 0 {
+                                // The sysctl is unset, so the effective limit is the macOS
+                                // default, read from Metal rather than guessed.
+                                let limitBytes = monitor.defaultWiredLimitBytes
+                                let wiredAvail = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
+                                StatItem(label: "WIRED LIMIT HEADROOM", value: "\u{2264} " + formatMemory(wiredAvail), color: .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                StatItem(label: "WIRED LIMIT (DEFAULT)", value: formatMemory(limitBytes), color: .secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             } else {
                                 StatItem(label: "WIRED LIMIT HEADROOM", value: "n/a", color: .secondary)

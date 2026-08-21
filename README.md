@@ -32,7 +32,7 @@ Puer uses macOS system interfaces and command-line tools rather than private fra
 - **Available memory** is computed as `total - used`, where used is `total - free - speculative - purgeable`. This avoids double-counting purgeable and inactive pages, which can otherwise inflate the number beyond physical RAM.
 - Swap usage comes from `sysctl vm.swapusage`.
 - Memory pressure is derived from `/usr/bin/memory_pressure` by parsing the reported system-wide free percentage (legacy signal), alongside the kernel's own verdict from `sysctl kern.memorystatus_vm_pressure_level` (1 normal / 2 warn / 4 critical).
-- Thermal state comes from `ProcessInfo.thermalState` and Low Power Mode from `ProcessInfo.isLowPowerModeEnabled`; the configured GPU wired limit from `sysctl iogpu.wired_limit_mb` (0 = macOS default, labeled as such).
+- Thermal state comes from `ProcessInfo.thermalState` and Low Power Mode from `ProcessInfo.isLowPowerModeEnabled`; the configured GPU wired limit from `sysctl iogpu.wired_limit_mb`. When that sysctl is unset, the effective macOS default limit is read from Metal's `recommendedMaxWorkingSetSize` and labeled as the default.
 - Swap in/out rates are computed by diffing the cumulative `vm_statistics64` swap counters between samples. A "pressure event" (kernel level leaving normal, or swap-out exceeding 5 MB/s) is timestamped, and the top per-name footprint *growers* over the preceding refresh window are captured as the causal hint; growth rather than size, because the biggest resident isn't always the cause.
 
 ### GPU and unified memory
@@ -60,6 +60,7 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 ### Important limitations
 
 - GPU stats are Apple-Silicon-specific. The current implementation depends on `AGXAccelerator`, so non-AGX Macs may show `Unknown` and zeroed GPU values.
+- ANE (Neural Engine) utilization is not shown: macOS exposes it only through root-privileged `powermetrics`, which conflicts with the app's no-elevation design.
 - Pressure events and history only cover the window since the app launched.
 - The unified pool bar is an exact partition of physical memory built from kernel and driver counters. Wired is shown as GPU In-Use plus everything-else-pinned; a finer GPU-vs-OS split within wired is not publicly measurable and is deliberately not guessed.
 - The `ioreg` parsing is text-based, so future macOS formatting changes could break some fields.
