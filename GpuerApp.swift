@@ -450,6 +450,20 @@ class SystemMonitor: ObservableObject {
     @Published var swapOnDiskHistory: [Double] = []  // GiB
     @Published var pressureLevelHistory: [Int] = []  // kernel level 1/2/4
     @Published var thermalHistory: [Int] = []        // ProcessInfo.ThermalState rawValue
+    @Published var powerModeHistory: [Int] = []      // 0 normal / 1 low power
+    // Internal self-checks (app diagnostics, distinct from user data): empty
+    // means consistent. Surfaced in the permanent Checks pill and report meta.
+    @Published var integrityWarnings: [String] = []
+    // The kernel's own declared carveout (memsize minus memsize_usable), read
+    // once at launch: the independent reference the Reserved residue is
+    // checked against every refresh.
+    let declaredCarveoutBytes: UInt64 = {
+        var usable: UInt64 = 0
+        var sz = MemoryLayout<UInt64>.size
+        sysctlbyname("hw.memsize_usable", &usable, &sz, nil, 0)
+        let total = getPhysicalMemory()
+        return total > usable && usable > 0 ? total - usable : 0
+    }()
     @Published var gpuHistory: [Int] = []  // device utilization %
     @Published var gpuMemHistory: [Double] = []  // in-use GPU memory fraction
     @Published var gpuMappedHistory: [Double] = []  // GPU-mapped memory fraction
@@ -595,13 +609,38 @@ class SystemMonitor: ObservableObject {
                 self.swapOnDiskHistory.append(Double(mem.swapUsedBytes) / 1_073_741_824)
                 self.pressureLevelHistory.append(mem.kernelPressureLevel)
                 self.thermalHistory.append(thermal.rawValue)
+                self.powerModeHistory.append(lowPower ? 1 : 0)
+
+                // Internal self-checks. Reserved is DEFINED as the residue of
+                // the named vm buckets against total, so summing the buckets
+                // back to total is tautological in the normal direction; the
+                // two checks below are the ones with independent information:
+                // the residue against the kernel's separately declared
+                // carveout, and the anomalous direction where named buckets
+                // alone exceed total (hidden by the residue clamp). 64 MiB
+                // threshold: far above page-rounding noise, far below any
+                // real accounting change.
+                var warn: [String] = []
+                let driftLimit: UInt64 = 67_108_864
+                if self.declaredCarveoutBytes > 0 {
+                    let cDiff = mem.kernelOtherBytes > self.declaredCarveoutBytes ? mem.kernelOtherBytes - self.declaredCarveoutBytes : self.declaredCarveoutBytes - mem.kernelOtherBytes
+                    if cDiff > driftLimit {
+                        warn.append("reserved drift: residue \(formatMemory(mem.kernelOtherBytes)) vs declared carveout \(formatMemory(self.declaredCarveoutBytes)); macOS accounting may have changed")
+                    }
+                }
+                let namedSum = mem.freeCountBytes + mem.activeBytes + mem.inactiveBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.throttledBytes
+                if namedSum > mem.totalBytes + driftLimit {
+                    warn.append("named vm buckets exceed total: \(formatMemory(namedSum)) vs \(formatMemory(mem.totalBytes))")
+                }
+                if warn != self.integrityWarnings { self.integrityWarnings = warn }
                 for kp in [\SystemMonitor.pCoreHistory, \SystemMonitor.eCoreHistory,
                            \SystemMonitor.swapInRateHistory, \SystemMonitor.swapOutRateHistory,
                            \SystemMonitor.swapOnDiskHistory] {
                     if self[keyPath: kp].count > self.maxHistory { self[keyPath: kp].removeFirst() }
                 }
                 for kp in [\SystemMonitor.rendererHistory, \SystemMonitor.tilerHistory,
-                           \SystemMonitor.pressureLevelHistory, \SystemMonitor.thermalHistory] {
+                           \SystemMonitor.pressureLevelHistory, \SystemMonitor.thermalHistory,
+                           \SystemMonitor.powerModeHistory] {
                     if self[keyPath: kp].count > self.maxHistory { self[keyPath: kp].removeFirst() }
                 }
 
@@ -733,8 +772,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     }
 
     let ts = ISO8601DateFormatter().string(from: Date())
-    let upS = max(0, Int(Date().timeIntervalSince(monitor.launchDate)))
-    let winS = min(upS, monitor.memoryHistory.count * 2)
+    let winS = min(max(0, Int(Date().timeIntervalSince(monitor.launchDate))), monitor.memoryHistory.count * 2)
     func dur(_ s: Int) -> String {
         s >= 3600 ? "\(s / 3600) hr \((s % 3600) / 60) min \(s % 60) s"
                   : (s >= 60 ? "\(s / 60) min \(s % 60) s" : "\(s) s")
@@ -749,7 +787,8 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
 
     var out = "=== PUER PERFORMANCE REPORT ===\n"
     out += "exported: \(ts)\n"
-    out += "history window: \(dur(winS)) at 2 s samples (history and events cover only the \(dur(upS)) since app launch)\n"
+    out += "history window: \(dur(winS)) at 2 s samples (processes at 5 s)\n"
+    out += monitor.integrityWarnings.isEmpty ? "self-check: ok\n" : "self-check: WARNING - \(monitor.integrityWarnings.joined(separator: "; "))\n"
 
     out += "\n[DEVICE]\n"
     out += "Hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
@@ -759,12 +798,12 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     // [MEMORY]: the Unified Memory column top to bottom: hero, pair, band,
     // allocation chips and legend, the accounting identity, then swap.
     out += "\n[MEMORY]\n"
-    out += "Memory Used (Strict): \(gib(mem.usedBytes)) GiB of \(gib(mem.totalBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + wired \(gib(mem.wiredBytes)) + app \(gib(mem.appBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    out += "Memory Used (Strict): \(gib(mem.usedBytes)) GiB of \(gib(mem.totalBytes)) GiB (reserved + wired + app + compressed)\n"
     // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
     // "Memory Used" counts purgeable cache and the reserved carveout in Used.
-    out += "Used (Loose): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB (activity monitor; empirical: strict + purgeable)\n"
+    out += "Memory Used (Loose): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB (activity monitor reference value; strict + purgeable)\n"
     out += "Available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
-    out += "Available 5-min Low: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB (lowest point in window)\n"
+    out += "Available 5-min Low: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB\n"
     out += "Pressure: \(kernelPressureName(mem.kernelPressureLevel))\n"
     if let evt = monitor.lastPressureEvent {
         out += "Last Event: \(Int(Date().timeIntervalSince(evt) / 60)) min ago this session\n"
@@ -772,7 +811,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
         out += "Last Event: none observed this session\n"
     }
     out += "Grew Before: \(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", "))\n"
-    out += "Reserved: \(gib(mem.kernelOtherBytes)) GiB (firmware carveout)\n"
+    out += "Reserved: \(gib(mem.kernelOtherBytes)) GiB (hardware and firmware carveouts outside kernel VM management)\n"
     out += "Wired: \(gib(mem.wiredBytes)) GiB\n"
     out += "App: \(gib(mem.appBytes)) GiB\n"
     out += "Compressed: \(gib(mem.compressedBytes)) GiB\n"
@@ -782,9 +821,11 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "Speculative: \(gib(mem.speculativeBytes)) GiB\n"
     out += "File-Backed: \(gib(fileCache)) GiB\n"
     out += "Unallocated: \(gib(mem.freeCountBytes + mem.throttledBytes)) GiB\n"
-    // Full kernel accounting identity: every physical page in a named bucket,
-    // reconciled against total, with the bookkeeping residue shown explicitly.
-    out += "kernel accounting: free \(gib(mem.freeCountBytes)) + active \(gib(mem.activeBytes)) + inactive \(gib(mem.inactiveBytes)) + speculative \(gib(mem.speculativeBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)) + throttled \(gib(mem.throttledBytes)) + reserved \(gib(mem.kernelOtherBytes)) = \(gib(mem.freeCountBytes + mem.activeBytes + mem.inactiveBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.throttledBytes + mem.kernelOtherBytes)) GiB (identity vs \(gib(mem.totalBytes)) total)\n"
+    // Raw kernel queues: not UI surfaces (File-Backed is the semantic bucket
+    // there) but source data an agent may want.
+    out += "Active Queue: \(gib(mem.activeBytes)) GiB (kernel page queue; File-Backed = active + inactive - App - Purgeable)\n"
+    out += "Inactive Queue: \(gib(mem.inactiveBytes)) GiB (kernel page queue)\n"
+
     out += "Swap On Disk: \(gib(mem.swapUsedBytes)) GiB\n"
     out += "Swap Rate In / Out: \(String(format: "%.\(UnitScale.mb.decimals)f", monitor.swapInRateMBs)) / \(String(format: "%.\(UnitScale.mb.decimals)f", monitor.swapOutRateMBs)) MiB/s\n"
     out += "Swap Session In / Out: \(gib(sessionSwapIn)) / \(gib(sessionSwapOut)) GiB\n"
@@ -799,12 +840,12 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
         let headroom = limitBytes > gpu.inUseMemory ? limitBytes - gpu.inUseMemory : 0
-        out += "Wired Limit Headroom: at most \(gib(headroom)) GiB\n"
+        out += "Wired Limit Headroom: at most \(gib(headroom)) GiB (limit minus GPU Memory In-Use; capped in practice by Available)\n"
         out += "Wired Limit: \(gib(limitBytes)) GiB (iogpu.wired_limit_mb; caps GPU wiring only)\n"
     } else if monitor.defaultWiredLimitBytes > 0 {
         let limitBytes = monitor.defaultWiredLimitBytes
         let headroom = limitBytes > gpu.inUseMemory ? limitBytes - gpu.inUseMemory : 0
-        out += "Wired Limit Headroom: at most \(gib(headroom)) GiB\n"
+        out += "Wired Limit Headroom: at most \(gib(headroom)) GiB (limit minus GPU Memory In-Use; capped in practice by Available)\n"
         out += "Wired Limit: \(gib(limitBytes)) GiB (macOS default via Metal recommendedMaxWorkingSetSize; iogpu.wired_limit_mb unset; caps GPU wiring only)\n"
     } else {
         out += "Wired Limit Headroom: n/a\n"
@@ -820,7 +861,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "P-Core Utilization: \(pct(cpu.performance))\n"
     out += "Per-Core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")) (E-cores first)\n"
 
-    out += "\n[MEMORY HISTORY] (~5 min, 2 s samples, oldest->newest, values are % of total unless noted)\n"
+    out += "\n[MEMORY HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are % of total unless noted)\n"
     out += "Memory Used (Strict): \(seriesSummary(monitor.memoryHistory))\n"
     out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
     out += "Allocation partition, % of total per component:\n"
@@ -832,7 +873,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "Swap On Disk (GiB): \(seriesRaw(monitor.swapOnDiskHistory, "%.\(UnitScale.gb.decimals)f"))\n"
     out += "Pressure Level (1 normal / 2 warn / 4 critical): \(seriesInts(monitor.pressureLevelHistory))\n"
 
-    out += "\n[GPU HISTORY] (values are % except memory, which is % of total unified)\n"
+    out += "\n[GPU HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are % except memory, which is % of total unified)\n"
     out += "GPU Utilization: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
     out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
     out += "Renderer Utilization: \(seriesSummary(monitor.rendererHistory.map { Double($0) / 100.0 }))\n"
@@ -844,7 +885,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "GPU Memory Mapped: \(seriesSummary(monitor.gpuMappedHistory))\n"
     out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
 
-    out += "\n[CPU HISTORY] (values are %)\n"
+    out += "\n[CPU HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are %)\n"
     out += "CPU Utilization: \(seriesSummary(monitor.cpuHistory))\n"
     out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
     out += "E-Core Utilization: \(seriesSummary(monitor.eCoreHistory))\n"
@@ -853,8 +894,9 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "  series: \(seriesCompact(monitor.pCoreHistory))\n"
     out += "(per-core history omitted by design: the cluster series above cover diagnosis; per-core is snapshot-only in [CPU])\n"
 
-    out += "\n[DEVICE HISTORY]\n"
+    out += "\n[DEVICE HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
     out += "Thermal State (0 nominal / 1 fair / 2 serious / 3 critical): \(seriesInts(monitor.thermalHistory))\n"
+    out += "Power Mode (0 normal / 1 low power): \(seriesInts(monitor.powerModeHistory))\n"
     out += "\n[PROCESSES] (snapshot; CPU over the last ~5 s window; growth per 5 s refresh; MiB throughout)\n"
     out += "top by footprint:\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
@@ -1721,14 +1763,17 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func topBar(reportCompact: Bool, infoSegments: Int, togglesCompact: Bool, pillsCompact: Bool) -> some View {
+    private func topBar(reportCompact: Bool, infoSegments: Int, togglesCompact: Bool, pillsCompact: Bool,
+                        edgeCompact: Bool = false, showTitle: Bool = true) -> some View {
         HStack(spacing: 12) {
-            Text("Puer")
-                .font(.system(size: 18, weight: .bold))
-                .lineLimit(1)
-                .fixedSize()
-            Divider()
-                .frame(height: 16)
+            if showTitle {
+                Text("Puer")
+                    .font(.system(size: 18, weight: .bold))
+                    .lineLimit(1)
+                    .fixedSize()
+                Divider()
+                    .frame(height: 16)
+            }
             HStack(spacing: 6) {
                 ColumnToggle(title: "Unified Memory", icon: "memorychip", compact: togglesCompact, isOn: $showMemory)
                 ColumnToggle(title: "GPU", icon: "cube.transparent", compact: togglesCompact, isOn: $showGPU)
@@ -1737,6 +1782,16 @@ struct ContentView: View {
             }
             .padding(3)
             .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
+            Divider()
+                .frame(height: 16)
+            // Puer's own health, placed before the device facts so app state
+            // and machine state read as separate things. Permanent slot (no
+            // disappearing UI): quiet green "passing" at rest, orange with
+            // details on hover if a self-check ever fires.
+            StatusPill(title: "Puer Self-Check", state: monitor.integrityWarnings.isEmpty ? "passing" : "\(monitor.integrityWarnings.count) warning\(monitor.integrityWarnings.count == 1 ? "" : "s")", icon: "checkmark.seal",
+                       color: monitor.integrityWarnings.isEmpty ? .green : .orange,
+                       compact: pillsCompact)
+                .help(monitor.integrityWarnings.isEmpty ? "Internal self-checks: Reserved residue matches the declared carveout; named vm buckets within total." : monitor.integrityWarnings.joined(separator: "\n"))
             if infoSegments > 0 {
                 Divider()
                     .frame(height: 16)
@@ -1776,8 +1831,13 @@ struct ContentView: View {
             .buttonStyle(.bordered)
             .help("Copy a plaintext performance report (snapshot + 5 min history) for troubleshooting")
         }
-        .padding(.leading, 76)
-        .padding(.trailing, 12)
+        // The 76 reserves the traffic-light zone; the final tiers reclaim it
+        // rather than let the trailing edge clip.
+        .padding(.leading, edgeCompact ? 12 : 76)
+        // 20 not 12: the window's rounded top-right corner intrudes into the
+        // bar's band, and the report button pins to this edge; the flexible
+        // spacer pays for the inset, so no width floor changes.
+        .padding(.trailing, 20)
         .padding(.vertical, 8)
     }
 
@@ -1816,6 +1876,11 @@ struct ContentView: View {
                 topBar(reportCompact: true, infoSegments: 0, togglesCompact: false, pillsCompact: false)
                 topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: false)
                 topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true)
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true,
+                       edgeCompact: true)
+                // Last resort, built for a future denser bar: the title goes.
+                topBar(reportCompact: true, infoSegments: 0, togglesCompact: true, pillsCompact: true,
+                       edgeCompact: true, showTitle: false)
             }
 
             Divider()
@@ -1867,7 +1932,7 @@ struct ContentView: View {
                         // note in the fold grammar and its hover into the allocation bar.
                         HStack(alignment: .top, spacing: 6) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("USED (LOOSE)")
+                                Text("MEMORY USED (LOOSE)")
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundColor(.secondary)
                                 Text(usedLooseValue)
