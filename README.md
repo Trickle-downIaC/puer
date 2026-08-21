@@ -13,7 +13,7 @@ SwiftUI windowed app for monitoring macOS CPU, GPU, and unified memory.
 - **Unified memory pool visualization** showing GPU-mapped memory, apps/OS, and available space as competing claims on one shared pool, rather than displaying as if the GPU has its own VRAM
 - Live Apple Silicon GPU utilization from `AGXAccelerator` `PerformanceStatistics`
 - **CPU load split by core type**: overall utilization plus separate performance-core and efficiency-core loads, and a per-core bar for every logical core
-- **Top CPU consumers over the last ~5s**: a recent-window ranking from per-process CPU-time deltas
+- **Top CPU consumers over the last ~4s**: a recent-window ranking from per-process CPU-time deltas
 - **Physical memory footprint** for per-process memory (the same metric Activity Monitor uses) instead of RSS, which inflates numbers by counting shared pages multiple times
 - **Labeled trend charts (last 5 min)**: available memory, GPU utilization, GPU memory in-use, and CPU load
 - **Copy Report button**: one click copies a plaintext diagnostic block for export
@@ -29,7 +29,8 @@ Puer uses macOS system interfaces and command-line tools rather than private fra
 
 - Total physical memory comes from `sysctl hw.memsize`.
 - Memory breakdown comes from `host_statistics64(HOST_VM_INFO64)`, using page counters such as active, inactive, wired, compressed, speculative, free, and purgeable.
-- **Available memory** is computed as `total - used`, where used is `total - free - speculative - purgeable`. This avoids double-counting purgeable and inactive pages, which can otherwise inflate the number beyond physical RAM.
+- **File-Backed** in the allocation legend is derived as `active + inactive - app - purgeable` from those counters: the kernel tracks these pages by recency (active/inactive queues), Puer re-partitions the same pages by kind. The raw queue values are internal inputs, not surfaces.
+- **Available memory** is exactly the four reclaimable tiers: purgeable + speculative + file-backed + unallocated (equivalently `total - Used (Strict)`). Every page sits in exactly one partition component, so nothing is double-counted or inflated past physical RAM.
 - Swap usage comes from `sysctl vm.swapusage`.
 - Memory pressure is the kernel's own verdict from `sysctl kern.memorystatus_vm_pressure_level` (1 normal / 2 warn / 4 critical). The legacy `/usr/bin/memory_pressure` free-percentage figure is deliberately not used: it is a crude free-memory fraction mislabeled as pressure, superseded by the exact Available computation.
 - Thermal state comes from `ProcessInfo.thermalState` and Low Power Mode from `ProcessInfo.isLowPowerModeEnabled`; the configured GPU wired limit from `sysctl iogpu.wired_limit_mb`. When that sysctl is unset, the effective macOS default limit is read from Metal's `recommendedMaxWorkingSetSize` and labeled as the default.
@@ -53,7 +54,7 @@ On Apple Silicon, there is no separate VRAM. The CPU and GPU share the same phys
 
 - Process list comes from `ps -eo pid,rss,pcpu,comm -r`.
 - Each process's memory is measured using **physical footprint** via `proc_pid_rusage(RUSAGE_INFO_V4)` and the `ri_phys_footprint` field. This is the same metric Activity Monitor shows in its "Memory" column. It avoids the problem where RSS (Resident Set Size) double-counts shared libraries and memory-mapped files across processes.
-- **Recent CPU%** is computed from the same `proc_pid_rusage` call by diffing each process's cumulative CPU time (`ri_user_time + ri_system_time`) between samples, over the ~5s refresh window, so it reflects what's busy *now*, not the lifetime average `ps` reports. Note these fields are in mach time units, not nanoseconds, so they're converted via `mach_timebase_info`.
+- **Recent CPU%** is computed from the same `proc_pid_rusage` call by diffing each process's cumulative CPU time (`ri_user_time + ri_system_time`) between samples, over the ~4s refresh window, so it reflects what's busy *now*, not the lifetime average `ps` reports. Note these fields are in mach time units, not nanoseconds, so they're converted via `mach_timebase_info`.
 - Processes are aggregated by executable name with a count shown (e.g. `node (10)`).
 - If `proc_pid_rusage` fails for a process (e.g. insufficient permissions for system processes), Puer falls back to RSS from `ps` for memory and to the `ps` `%CPU` value for CPU.
 

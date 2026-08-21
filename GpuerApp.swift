@@ -5,6 +5,18 @@ import Foundation
 import IOKit
 import Metal
 
+// Canonical state vocabulary: any string that appears on more than one
+// surface (pill + report) lives here once, like the partition terminology.
+func selfCheckStateText(_ warnings: [String]) -> String {
+    warnings.isEmpty ? "passing" : "\(warnings.count) warning\(warnings.count == 1 ? "" : "s")"
+}
+func selfCheckDetailText(_ warnings: [String], separator: String) -> String {
+    warnings.isEmpty ? "Internal self-checks: Reserved residue matches the declared carveout; named vm buckets within total." : warnings.joined(separator: separator)
+}
+func powerModeName(_ lowPower: Bool) -> String {
+    lowPower ? "low power" : "normal"
+}
+
 // Canonical partition terminology: every surface that names the nine
 // components (legend chips, scrub panel, report now-lines, report history)
 // reads these, index-aligned in bar order, so wording cannot drift.
@@ -69,7 +81,7 @@ struct ProcessMemory: Identifiable {
     let pid: Int
     let residentMB: Double
     let cpuPercent: Double  // CPU% over the last sampling window (see readTopProcesses)
-    let growthMB: Double    // footprint change over the last refresh window (~5s)
+    let growthMB: Double    // footprint change over the last refresh window (4 s)
 }
 
 // Per-process sample before aggregation and recent-CPU computation.
@@ -454,6 +466,10 @@ class SystemMonitor: ObservableObject {
     // Internal self-checks (app diagnostics, distinct from user data): empty
     // means consistent. Surfaced in the permanent Checks pill and report meta.
     @Published var integrityWarnings: [String] = []
+    // Timestamp of the latest fast-tick sample: the report anchors its
+    // exported time here so every historical sample's exact time derives
+    // as exported minus 2 s steps.
+    var lastSampleDate = Date()
     // The kernel's own declared carveout (memsize minus memsize_usable), read
     // once at launch: the independent reference the Reserved residue is
     // checked against every refresh.
@@ -470,10 +486,10 @@ class SystemMonitor: ObservableObject {
     @Published var cpuHistory: [Double] = []  // overall CPU busy fraction
 
     // Window (seconds) over which per-process recent CPU% is measured; matches the slow timer.
-    let processWindowSeconds = 5
+    let processWindowSeconds = 4  // every second 2 s tick
 
     private var fastTimer: Timer?
-    private var slowTimer: Timer?
+    private var fastTick = 0  // processes ride the fast timer: every 2nd tick
     private let maxHistory = 150  // 5 min at the 2s fast-timer cadence
 
     // Previous samples needed to turn cumulative counters into rates.
@@ -521,19 +537,21 @@ class SystemMonitor: ObservableObject {
         prevSwapSampleTime = ProcessInfo.processInfo.systemUptime
         refresh()
         refreshProcesses()
-        // Memory + GPU stats every 2s
+        // One clock for everything. Memory + GPU + CPU every 2 s; the process
+        // pass (ps is heavier) rides the same timer on every second tick, so
+        // its 4 s samples land exactly on fast-tick timestamps instead of a
+        // second timer drifting against the first.
         fastTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
-        // Process list every 5s (ps is heavier)
-        slowTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.refreshProcesses()
+            guard let self else { return }
+            self.refresh()
+            self.fastTick += 1
+            if self.fastTick % 2 == 0 { self.refreshProcesses() }
         }
     }
 
     deinit {
         fastTimer?.invalidate()
-        slowTimer?.invalidate()
+
     }
 
     func refresh() {
@@ -567,6 +585,7 @@ class SystemMonitor: ObservableObject {
             // Pressure "event": kernel leaves normal, or sustained swap-out activity.
             let eventNow = mem.kernelPressureLevel > 1 || outRate > 5.0
             DispatchQueue.main.async {
+                self.lastSampleDate = Date()
                 self.memoryStats = mem
                 self.gpuStats = gpu
                 self.cpuStats = cpu
@@ -702,7 +721,7 @@ class SystemMonitor: ObservableObject {
                                      growthMB: d.mb - (self.prevAggMB[name] ?? d.mb))
             }
 
-            // Top growers since last refresh (~5s): the "what changed" hint for pressure
+            // Top growers since last refresh (4 s): the "what changed" hint for pressure
             // events. Growth, not size; the biggest resident is rarely the cause.
             var growers: [(String, Double)] = []
             for (name, d) in agg {
@@ -771,8 +790,11 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
         s.map(String.init).joined(separator: ",")
     }
 
-    let ts = ISO8601DateFormatter().string(from: Date())
-    let winS = min(max(0, Int(Date().timeIntervalSince(monitor.launchDate))), monitor.memoryHistory.count * 2)
+    // Sample-anchored meta: the timestamp is the latest sample's time and
+    // the window is exactly samples x 2 s, so sample i of n occurred at
+    // exported - (n - 1 - i) x 2 s, derivable to the second.
+    let ts = ISO8601DateFormatter().string(from: monitor.lastSampleDate)
+    let winS = monitor.memoryHistory.count * 2
     func dur(_ s: Int) -> String {
         s >= 3600 ? "\(s / 3600) hr \((s % 3600) / 60) min \(s % 60) s"
                   : (s >= 60 ? "\(s / 60) min \(s % 60) s" : "\(s) s")
@@ -786,14 +808,14 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     let peakUsedFrac = monitor.memoryHistory.max() ?? 0
 
     var out = "=== PUER PERFORMANCE REPORT ===\n"
-    out += "exported: \(ts)\n"
-    out += "history window: \(dur(winS)) at 2 s samples (processes at 5 s)\n"
-    out += monitor.integrityWarnings.isEmpty ? "self-check: ok\n" : "self-check: WARNING - \(monitor.integrityWarnings.joined(separator: "; "))\n"
+    out += "exported: \(ts) (time of the latest sample; each earlier sample steps back 2 s)\n"
+    out += "history window: \(dur(winS)) at 2 s samples (processes at 4 s)\n"
+    out += "self-check: \(selfCheckStateText(monitor.integrityWarnings))\(monitor.integrityWarnings.isEmpty ? "" : " - " + monitor.integrityWarnings.joined(separator: "; "))\n"
 
     out += "\n[DEVICE]\n"
     out += "Hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
     out += "Thermal: \(thermalStateName(monitor.thermalState))\n"
-    out += "Power Mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
+    out += "Power Mode: \(powerModeName(monitor.lowPowerMode))\n"
 
     // [MEMORY]: the Unified Memory column top to bottom: hero, pair, band,
     // allocation chips and legend, the accounting identity, then swap.
@@ -806,11 +828,11 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "Available 5-min Low: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB\n"
     out += "Pressure: \(kernelPressureName(mem.kernelPressureLevel))\n"
     if let evt = monitor.lastPressureEvent {
-        out += "Last Event: \(Int(Date().timeIntervalSince(evt) / 60)) min ago this session\n"
+        out += "Last Event: \(Int(Date().timeIntervalSince(evt) / 60)) min ago this session (time since the most recent kernel pressure elevation)\n"
     } else {
-        out += "Last Event: none observed this session\n"
+        out += "Last Event: none observed this session (time since the most recent kernel pressure elevation)\n"
     }
-    out += "Grew Before: \(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", "))\n"
+    out += "Grew Before: \(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", ")) (top process growers just before the last event)\n"
     out += "Reserved: \(gib(mem.kernelOtherBytes)) GiB (hardware and firmware carveouts outside kernel VM management)\n"
     out += "Wired: \(gib(mem.wiredBytes)) GiB\n"
     out += "App: \(gib(mem.appBytes)) GiB\n"
@@ -821,10 +843,6 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "Speculative: \(gib(mem.speculativeBytes)) GiB\n"
     out += "File-Backed: \(gib(fileCache)) GiB\n"
     out += "Unallocated: \(gib(mem.freeCountBytes + mem.throttledBytes)) GiB\n"
-    // Raw kernel queues: not UI surfaces (File-Backed is the semantic bucket
-    // there) but source data an agent may want.
-    out += "Active Queue: \(gib(mem.activeBytes)) GiB (kernel page queue; File-Backed = active + inactive - App - Purgeable)\n"
-    out += "Inactive Queue: \(gib(mem.inactiveBytes)) GiB (kernel page queue)\n"
 
     out += "Swap On Disk: \(gib(mem.swapUsedBytes)) GiB\n"
     out += "Swap Rate In / Out: \(String(format: "%.\(UnitScale.mb.decimals)f", monitor.swapInRateMBs)) / \(String(format: "%.\(UnitScale.mb.decimals)f", monitor.swapOutRateMBs)) MiB/s\n"
@@ -859,7 +877,7 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "CPU Utilization: \(pct(cpu.overall))\n"
     out += "E-Core Utilization: \(pct(cpu.efficiency))\n"
     out += "P-Core Utilization: \(pct(cpu.performance))\n"
-    out += "Per-Core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")) (E-cores first)\n"
+    out += "Per-Core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")) (utilization %, E-cores first)\n"
 
     out += "\n[MEMORY HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest; values are % of total unless noted)\n"
     out += "Memory Used (Strict): \(seriesSummary(monitor.memoryHistory))\n"
@@ -897,10 +915,10 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "\n[DEVICE HISTORY] (\(dur(winS)) at 2 s samples, oldest->newest)\n"
     out += "Thermal State (0 nominal / 1 fair / 2 serious / 3 critical): \(seriesInts(monitor.thermalHistory))\n"
     out += "Power Mode (0 normal / 1 low power): \(seriesInts(monitor.powerModeHistory))\n"
-    out += "\n[PROCESSES] (snapshot; CPU over the last ~5 s window; growth per 5 s refresh; MiB throughout)\n"
+    out += "\n[PROCESSES] (snapshot; CPU over the last ~4 s window; growth per 4 s refresh; MiB throughout)\n"
     out += "top by footprint:\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
-        out += String(format: "\(mibF(9)) MiB  %+6.0f MiB/5s  %5.1f%% CPU  %@\n", p.residentMB, p.growthMB, p.cpuPercent, p.name)
+        out += String(format: "\(mibF(9)) MiB  %+6.0f MiB/4s  %5.1f%% CPU  %@\n", p.residentMB, p.growthMB, p.cpuPercent, p.name)
     }
     out += "top by cpu:\n"
     for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
@@ -1788,10 +1806,10 @@ struct ContentView: View {
             // and machine state read as separate things. Permanent slot (no
             // disappearing UI): quiet green "passing" at rest, orange with
             // details on hover if a self-check ever fires.
-            StatusPill(title: "Puer Self-Check", state: monitor.integrityWarnings.isEmpty ? "passing" : "\(monitor.integrityWarnings.count) warning\(monitor.integrityWarnings.count == 1 ? "" : "s")", icon: "checkmark.seal",
+            StatusPill(title: "Puer Self-Check", state: selfCheckStateText(monitor.integrityWarnings), icon: "checkmark.seal",
                        color: monitor.integrityWarnings.isEmpty ? .green : .orange,
                        compact: pillsCompact)
-                .help(monitor.integrityWarnings.isEmpty ? "Internal self-checks: Reserved residue matches the declared carveout; named vm buckets within total." : monitor.integrityWarnings.joined(separator: "\n"))
+                .help(selfCheckDetailText(monitor.integrityWarnings, separator: "\n"))
             if infoSegments > 0 {
                 Divider()
                     .frame(height: 16)
@@ -1808,7 +1826,7 @@ struct ContentView: View {
                        compact: pillsCompact)
             Divider()
                 .frame(height: 16)
-            StatusPill(title: "Power", state: monitor.lowPowerMode ? "low power" : "normal", icon: "bolt.fill",
+            StatusPill(title: "Power", state: powerModeName(monitor.lowPowerMode), icon: "bolt.fill",
                        color: monitor.lowPowerMode ? .orange : .green,
                        compact: pillsCompact)
             Spacer(minLength: 8)
