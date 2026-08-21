@@ -1363,8 +1363,8 @@ struct ContentView: View {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
         if showMemory { columns += 500 }
-        if showGPU { columns += 390 }
-        if showCPU { columns += 390 }
+        if showGPU { columns += 402 }
+        if showCPU { columns += 402 }
         if showProcesses { columns += 220 }
         return max(topBarMin, columns)
     }
@@ -1832,12 +1832,12 @@ struct ContentView: View {
                             // pair relatively to spot geometry-bound vs fill-bound work.
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    graphHeader("RENDERER", "\(monitor.gpuStats.rendererUtilization)%", gpuPurple, note: "")
+                                    graphHeader("RENDERER UTIL.", "\(monitor.gpuStats.rendererUtilization)%", gpuPurple, note: "")
                                     UsageBarView(segments: [(Double(monitor.gpuStats.rendererUtilization) / 100.0, gpuPurple)], height: 8)
                                 }
                                 .frame(maxWidth: .infinity)
                                 VStack(alignment: .leading, spacing: 6) {
-                                    graphHeader("TILER", "\(monitor.gpuStats.tilerUtilization)%", gpuPurple, note: "")
+                                    graphHeader("TILER UTIL.", "\(monitor.gpuStats.tilerUtilization)%", gpuPurple, note: "")
                                     UsageBarView(segments: [(Double(monitor.gpuStats.tilerUtilization) / 100.0, gpuPurple)], height: 8)
                                 }
                                 .frame(maxWidth: .infinity)
@@ -1919,7 +1919,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 390, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 402, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showCPU {
@@ -1949,14 +1949,12 @@ struct ContentView: View {
                             // the per-core chart below, so no legend is needed.
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    graphHeader("EFFICIENCY", "\(Int((monitor.cpuStats.efficiency * 100).rounded()))%", .teal,
-                                                note: "\(monitor.cpuStats.efficiencyCoreCount) cores")
+                                    graphHeader("E-CORE UTIL.", "\(Int((monitor.cpuStats.efficiency * 100).rounded()))%", .teal, note: "")
                                     UsageBarView(segments: [(monitor.cpuStats.efficiency, .teal)], height: 8)
                                 }
                                 .frame(maxWidth: .infinity)
                                 VStack(alignment: .leading, spacing: 6) {
-                                    graphHeader("PERFORMANCE", "\(Int((monitor.cpuStats.performance * 100).rounded()))%", .blue,
-                                                note: "\(monitor.cpuStats.performanceCoreCount) cores")
+                                    graphHeader("P-CORE UTIL.", "\(Int((monitor.cpuStats.performance * 100).rounded()))%", .blue, note: "")
                                     UsageBarView(segments: [(monitor.cpuStats.performance, .blue)], height: 8)
                                 }
                                 .frame(maxWidth: .infinity)
@@ -1980,7 +1978,7 @@ struct ContentView: View {
                 .padding([.horizontal, .bottom], 16)
                 .padding(.top, 12)
             }
-            .frame(minWidth: 390, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 402, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if showProcesses {
