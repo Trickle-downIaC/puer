@@ -433,6 +433,17 @@ class SystemMonitor: ObservableObject {
     // fractions of total, in bar order (reserved, gpuInUse, wiredOther, app,
     // compressed, purgeable, speculative, fileBacked, unallocated).
     @Published var allocHistory: [[Double]] = []
+    // Full-window histories for every cheap UI-visible signal, so the report
+    // never exports a bare snapshot where a series was free to keep.
+    @Published var pCoreHistory: [Double] = []       // P-cluster utilization fraction
+    @Published var eCoreHistory: [Double] = []       // E-cluster utilization fraction
+    @Published var rendererHistory: [Int] = []       // GPU renderer %
+    @Published var tilerHistory: [Int] = []          // GPU tiler %
+    @Published var swapInRateHistory: [Double] = []  // MB/s
+    @Published var swapOutRateHistory: [Double] = [] // MB/s
+    @Published var swapOnDiskHistory: [Double] = []  // GiB
+    @Published var pressureLevelHistory: [Int] = []  // kernel level 1/2/4
+    @Published var thermalHistory: [Int] = []        // ProcessInfo.ThermalState rawValue
     @Published var gpuHistory: [Int] = []  // device utilization %
     @Published var gpuMemHistory: [Double] = []  // in-use GPU memory fraction
     @Published var gpuMappedHistory: [Double] = []  // GPU-mapped memory fraction
@@ -568,6 +579,26 @@ class SystemMonitor: ObservableObject {
                 ])
                 if self.allocHistory.count > self.maxHistory { self.allocHistory.removeFirst() }
 
+                // The cheap-signal histories: values already in hand this tick.
+                self.pCoreHistory.append(cpu.performance)
+                self.eCoreHistory.append(cpu.efficiency)
+                self.rendererHistory.append(gpu.rendererUtilization)
+                self.tilerHistory.append(gpu.tilerUtilization)
+                self.swapInRateHistory.append(inRate)
+                self.swapOutRateHistory.append(outRate)
+                self.swapOnDiskHistory.append(Double(mem.swapUsedBytes) / 1_073_741_824)
+                self.pressureLevelHistory.append(mem.kernelPressureLevel)
+                self.thermalHistory.append(thermal.rawValue)
+                for kp in [\SystemMonitor.pCoreHistory, \SystemMonitor.eCoreHistory,
+                           \SystemMonitor.swapInRateHistory, \SystemMonitor.swapOutRateHistory,
+                           \SystemMonitor.swapOnDiskHistory] {
+                    if self[keyPath: kp].count > self.maxHistory { self[keyPath: kp].removeFirst() }
+                }
+                for kp in [\SystemMonitor.rendererHistory, \SystemMonitor.tilerHistory,
+                           \SystemMonitor.pressureLevelHistory, \SystemMonitor.thermalHistory] {
+                    if self[keyPath: kp].count > self.maxHistory { self[keyPath: kp].removeFirst() }
+                }
+
                 self.gpuHistory.append(gpu.deviceUtilization)
                 if self.gpuHistory.count > self.maxHistory { self.gpuHistory.removeFirst() }
 
@@ -684,6 +715,12 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     func seriesCompact(_ s: [Double]) -> String {
         s.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")
     }
+    func seriesRaw(_ s: [Double], _ fmt: String = "%.1f") -> String {
+        s.map { String(format: fmt, $0) }.joined(separator: ",")
+    }
+    func seriesInts(_ s: [Int]) -> String {
+        s.map(String.init).joined(separator: ",")
+    }
 
     let ts = ISO8601DateFormatter().string(from: Date())
     var out = "=== PUER PERFORMANCE REPORT ===\n"
@@ -756,10 +793,29 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
     out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
     out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
+    out += "cpu p-cores: \(seriesSummary(monitor.pCoreHistory))\n"
+    out += "  series: \(seriesCompact(monitor.pCoreHistory))\n"
+    out += "cpu e-cores: \(seriesSummary(monitor.eCoreHistory))\n"
+    out += "  series: \(seriesCompact(monitor.eCoreHistory))\n"
+    out += "(per-core history omitted by design: the cluster series above cover diagnosis; per-core is snapshot-only in [CPU now])\n"
+    out += "gpu renderer: \(seriesSummary(monitor.rendererHistory.map { Double($0) / 100.0 }))\n"
+    out += "  series: \(seriesInts(monitor.rendererHistory))\n"
+    out += "gpu tiler: \(seriesSummary(monitor.tilerHistory.map { Double($0) / 100.0 }))\n"
+    out += "  series: \(seriesInts(monitor.tilerHistory))\n"
+    out += "swap in rate MB/s: series: \(seriesRaw(monitor.swapInRateHistory))\n"
+    out += "swap out rate MB/s: series: \(seriesRaw(monitor.swapOutRateHistory))\n"
+    out += "swap on disk GiB: series: \(seriesRaw(monitor.swapOnDiskHistory, "%.2f"))\n"
+    out += "kernel pressure level (1 normal / 2 warn / 4 critical): series: \(seriesInts(monitor.pressureLevelHistory))\n"
+    out += "thermal state (0 nominal / 1 fair / 2 serious / 3 critical): series: \(seriesInts(monitor.thermalHistory))\n"
+    out += "allocation partition (% of total; reserved, gpu in-use wired, other wired, app, compressed, purgeable, speculative, file-backed, unallocated):\n"
+    let allocNames = ["reserved", "gpu-in-use", "other-wired", "app", "compressed", "purgeable", "speculative", "file-backed", "unallocated"]
+    for (i, nm) in allocNames.enumerated() {
+        out += "  \(nm): \(seriesCompact(monitor.allocHistory.map { $0[i] }))\n"
+    }
     out += "\n[PROCESSES, recent CPU over ~5s window]\n"
     out += "top by footprint:\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
-        out += String(format: "%9.0f MB  %5.1f%% CPU  %@\n", p.residentMB, p.cpuPercent, p.name)
+        out += String(format: "%9.0f MB  %+6.0f MB/5s  %5.1f%% CPU  %@\n", p.residentMB, p.growthMB, p.cpuPercent, p.name)
     }
     out += "top by cpu:\n"
     for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
