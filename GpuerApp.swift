@@ -1136,6 +1136,9 @@ struct SectionHeader: View {
     }
 }
 
+// Swap rates: one decimal below 10 MB/s, whole numbers above.
+func swapRateStr(_ v: Double) -> String { String(format: v < 10 ? "%.1f" : "%.0f", v) }
+
 struct StatItem: View {
     let label: String
     let value: String
@@ -1623,32 +1626,49 @@ struct ContentView: View {
                         // The status band: one slim row. Pressure's pill, the event
                         // clock, then the forensics with the row's remaining width so a
                         // process name can speak on one line.
-                        HStack(spacing: 8) {
-                            Text("PRESSURE")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                            Text(kernelPressureName(monitor.memoryStats.kernelPressureLevel).capitalized)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(pressureColor)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(pressureColor.opacity(0.15)))
-                            Text("LAST EVENT")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .padding(.leading, 4)
-                            Text(lastPressure)
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundColor(lastPressureColor)
-                            Text("GREW BEFORE")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .padding(.leading, 4)
-                            Text(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", "))
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 6) {
+                            // Verdict row: the kernel's pill and the event clock.
+                            HStack(spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text("PRESSURE")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                        .fixedSize()
+                                    Text(kernelPressureName(monitor.memoryStats.kernelPressureLevel).capitalized)
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(pressureColor)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(Capsule().fill(pressureColor.opacity(0.15)))
+                                }
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                HStack(spacing: 8) {
+                                    Text("LAST EVENT")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                        .fixedSize()
+                                    Text(lastPressure)
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(lastPressureColor)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            // Forensic row: its own register, so the growers list has the
+                            // band's full width; with room to speak, the top three return.
+                            HStack(spacing: 8) {
+                                Text("GREW BEFORE")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize()
+                                Text(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", "))
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.05)))
+                            }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
@@ -1865,19 +1885,26 @@ struct ContentView: View {
                         let swapIOActive = monitor.swapInRateMBs > 0.05 || monitor.swapOutRateMBs > 0.05
                         let lastIO = swapIOActive ? "now" : (monitor.lastSwapIODate.map { d -> String in
                             let m = Int(Date().timeIntervalSince(d) / 60)
-                            return m < 1 ? "<1 min ago" : "\(m) min ago"
+                            return m < 1 ? "<1 min ago" : (m < 60 ? "\(m) min ago" : "\(m / 60) hr ago")
                         } ?? "-")
                         HStack(spacing: 0) {
                             // Cells hug content; the flexible gaps between them are
                             // what compress, down to a 12-point minimum at the floor.
                             StatItem(label: "ON DISK", value: formatMemory(monitor.memoryStats.swapUsedBytes), color: .secondary)
                             Spacer(minLength: 12)
-                            StatItem(label: "RATE IN / OUT", value: String(format: "%.1f / %.1f MB/s", monitor.swapInRateMBs, monitor.swapOutRateMBs),
+                            // Adaptive decimals: one tenth below 10 MB/s (the 0.5 alert
+                            // threshold lives there), whole numbers above, so the cell's
+                            // worst case fits the floor without truncation.
+                            StatItem(label: "RATE IN / OUT",
+                                     value: "\(swapRateStr(monitor.swapInRateMBs)) / \(swapRateStr(monitor.swapOutRateMBs)) MB/s",
                                      color: monitor.swapOutRateMBs > 0.5 ? .orange : .secondary)
                             Spacer(minLength: 12)
                             StatItem(label: "SESSION IN / OUT", value: "\(formatMemory(sessionIn)) / \(formatMemory(sessionOut))", color: .secondary)
                             Spacer(minLength: 12)
                             StatItem(label: "LAST I/O", value: lastIO, color: swapIOActive ? .orange : .secondary)
+                                // Reserve the worst case ("59 min ago") so the cell holds
+                                // constant width as the value shifts between forms.
+                                .frame(minWidth: 84, alignment: .leading)
                         }
                         .padding(10)
                         .background(Color.primary.opacity(0.05))
