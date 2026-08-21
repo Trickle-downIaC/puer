@@ -1899,10 +1899,11 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.03))
                     .cornerRadius(10)
 
-                    // Memory claims: each claim is one combo card, the readout heading
-                    // its own history with the denominator as annotation.
+                    // Memory budget: the GPU's allowance and the spend against it. The
+                    // wired limit pair heads the card as the budget line; each claim
+                    // beneath is one combo card, the readout heading its own history.
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Memory claims")
+                        Text("Memory budget")
                             .font(.system(size: 13, weight: .semibold))
                         let inUseCapBytes = monitor.wiredLimitMB > 0 ? UInt64(monitor.wiredLimitMB) * 1_048_576 : monitor.memoryStats.totalBytes
                         // The driver's leash, reunited with the graph it caps: the limit
