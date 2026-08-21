@@ -5,6 +5,12 @@ import Foundation
 import IOKit
 import Metal
 
+// Canonical partition terminology: every surface that names the nine
+// components (legend chips, scrub panel, report now-lines, report history)
+// reads these, index-aligned in bar order, so wording cannot drift.
+let allocComponentKeys = ["reserved", "gpuInUse", "wiredOther", "app", "compressed", "purgeable", "speculative", "fileBacked", "unallocated"]
+let allocComponentNames = ["Reserved", "Wired - GPU In-Use", "Wired - GPU Idle / Non-GPU", "App", "Compressed", "Purgeable", "Speculative", "File-Backed", "Unallocated"]
+
 // MARK: - Data Models
 
 struct MemoryStats {
@@ -701,7 +707,11 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     let cpu = monitor.cpuStats
 
     func gib(_ bytes: UInt64) -> String {
-        String(format: "%.2f", Double(bytes) / 1_073_741_824)
+        // Number-only; lines append the report dialect's GiB label themselves.
+        String(format: "%.\(UnitScale.gb.decimals)f", Double(bytes) / UnitScale.gb.divisor)
+    }
+    func mibF(_ width: Int) -> String {  // width-padded MiB column format, core-derived decimals
+        "%\(width).\(UnitScale.mb.decimals)f"
     }
     func pct(_ frac: Double) -> String {
         String(format: "%.0f%%", frac * 100)
@@ -723,103 +733,136 @@ func buildPerformanceReport(monitor: SystemMonitor) -> String {
     }
 
     let ts = ISO8601DateFormatter().string(from: Date())
-    var out = "=== PUER PERFORMANCE REPORT ===\n"
-    out += "time: \(ts)\n"
-    out += "monitoring for: \(Int(Date().timeIntervalSince(monitor.launchDate) / 60)) min (history and events cover this window only)\n"
-    out += "hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
-    out += "\n[MEMORY now]\n"
-    out += "available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
-    out += "used (strict): \(gib(mem.usedBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + wired \(gib(mem.wiredBytes)) + app \(gib(mem.appBytes)) + compressed \(gib(mem.compressedBytes)))\n"
-    // Reserved identified live: the firmware carveout the VM system never
-    // manages, declared by the kernel itself as memsize minus memsize_usable.
-    var usableMem: UInt64 = 0
-    var usableSz = MemoryLayout<UInt64>.size
-    sysctlbyname("hw.memsize_usable", &usableMem, &usableSz, nil, 0)
-    if usableMem > 0 && mem.totalBytes > usableMem {
-        out += "reserved cross-check: derived \(gib(mem.kernelOtherBytes)) GiB vs declared firmware carveout \(gib(mem.totalBytes - usableMem)) GiB (hw.memsize - hw.memsize_usable)\n"
+    let upS = max(0, Int(Date().timeIntervalSince(monitor.launchDate)))
+    let winS = min(upS, monitor.memoryHistory.count * 2)
+    func dur(_ s: Int) -> String {
+        s >= 3600 ? "\(s / 3600) hr \((s % 3600) / 60) min \(s % 60) s"
+                  : (s >= 60 ? "\(s / 60) min \(s % 60) s" : "\(s) s")
     }
-    // Plain file cache: file-backed pages on the active/inactive queues. With
-    // purgeable and speculative this reconstructs Activity Monitor's Cached
-    // Files; in Puer's model all three live inside Available.
+    // Derived once, used in their UI-ordered places below.
     let fileCache = UInt64(max(0, Int64(mem.activeBytes) + Int64(mem.inactiveBytes) - Int64(mem.appBytes) - Int64(mem.purgeableBytes)))
-    out += "purgeable: \(gib(mem.purgeableBytes)) GiB; speculative: \(gib(mem.speculativeBytes)) GiB; file-backed: \(gib(fileCache)) GiB\n"
+    let gpuWiredPart = min(gpu.inUseMemory, mem.wiredBytes)  // coherence clamp, as in the UI partition
+    let sessionSwapOut = mem.swapOutsBytes > monitor.launchSwapOutsBytes ? mem.swapOutsBytes - monitor.launchSwapOutsBytes : 0
+    let sessionSwapIn = mem.swapInsBytes > monitor.launchSwapInsBytes ? mem.swapInsBytes - monitor.launchSwapInsBytes : 0
+    let lastIODesc = monitor.lastSwapIODate.map { "\(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago" } ?? "none since launch"
+    let peakUsedFrac = monitor.memoryHistory.max() ?? 0
+
+    var out = "=== PUER PERFORMANCE REPORT ===\n"
+    out += "exported: \(ts)\n"
+    out += "history window: \(dur(winS)) at 2 s samples (history and events cover only the \(dur(upS)) since app launch)\n"
+
+    out += "\n[DEVICE]\n"
+    out += "Hardware: \(gpu.model), \(cpu.performanceCoreCount)P/\(cpu.efficiencyCoreCount)E CPU, \(gpu.coreCount) GPU cores, \(gib(mem.totalBytes)) GiB unified\n"
+    out += "Thermal: \(thermalStateName(monitor.thermalState))\n"
+    out += "Power Mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
+
+    // [MEMORY]: the Unified Memory column top to bottom: hero, pair, band,
+    // allocation chips and legend, the accounting identity, then swap.
+    out += "\n[MEMORY]\n"
+    out += "Memory Used (Strict): \(gib(mem.usedBytes)) GiB of \(gib(mem.totalBytes)) GiB (reserved \(gib(mem.kernelOtherBytes)) + wired \(gib(mem.wiredBytes)) + app \(gib(mem.appBytes)) + compressed \(gib(mem.compressedBytes)))\n"
+    // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
+    // "Memory Used" counts purgeable cache and the reserved carveout in Used.
+    out += "Used (Loose): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB (activity monitor; empirical: strict + purgeable)\n"
+    out += "Available: \(gib(mem.availableBytes)) GiB (\(pct(mem.availableFraction)))\n"
+    out += "Available 5-min Low: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB (lowest point in window)\n"
+    out += "Pressure: \(kernelPressureName(mem.kernelPressureLevel))\n"
+    if let evt = monitor.lastPressureEvent {
+        out += "Last Event: \(Int(Date().timeIntervalSince(evt) / 60)) min ago this session\n"
+    } else {
+        out += "Last Event: none observed this session\n"
+    }
+    out += "Grew Before: \(monitor.lastEventGrowers.isEmpty ? "n/a" : monitor.lastEventGrowers.joined(separator: ", "))\n"
+    out += "Reserved: \(gib(mem.kernelOtherBytes)) GiB (firmware carveout)\n"
+    out += "Wired: \(gib(mem.wiredBytes)) GiB\n"
+    out += "App: \(gib(mem.appBytes)) GiB\n"
+    out += "Compressed: \(gib(mem.compressedBytes)) GiB\n"
+    out += "\(allocComponentNames[1]): \(gib(gpuWiredPart)) GiB\n"
+    out += "\(allocComponentNames[2]): \(gib(mem.wiredBytes - gpuWiredPart)) GiB\n"
+    out += "Purgeable: \(gib(mem.purgeableBytes)) GiB\n"
+    out += "Speculative: \(gib(mem.speculativeBytes)) GiB\n"
+    out += "File-Backed: \(gib(fileCache)) GiB\n"
+    out += "Unallocated: \(gib(mem.freeCountBytes + mem.throttledBytes)) GiB\n"
     // Full kernel accounting identity: every physical page in a named bucket,
     // reconciled against total, with the bookkeeping residue shown explicitly.
     out += "kernel accounting: free \(gib(mem.freeCountBytes)) + active \(gib(mem.activeBytes)) + inactive \(gib(mem.inactiveBytes)) + speculative \(gib(mem.speculativeBytes)) + wired \(gib(mem.wiredBytes)) + compressed \(gib(mem.compressedBytes)) + throttled \(gib(mem.throttledBytes)) + reserved \(gib(mem.kernelOtherBytes)) = \(gib(mem.freeCountBytes + mem.activeBytes + mem.inactiveBytes + mem.speculativeBytes + mem.wiredBytes + mem.compressedBytes + mem.throttledBytes + mem.kernelOtherBytes)) GiB (identity vs \(gib(mem.totalBytes)) total)\n"
-    // Empirical fit, within ~0.1 GiB across observed states: Activity Monitor's
-    // "Memory Used" counts purgeable cache and the reserved carveout in Used,
-    // which is why it reads above ours and overlaps its own Cached Files.
-    out += "used (loose / activity monitor; empirical: strict + purgeable): \(gib(mem.usedBytes + mem.purgeableBytes)) GiB\n"
-    out += "swap used: \(gib(mem.swapUsedBytes)) GiB\n"
-    out += "kernel pressure: \(kernelPressureName(mem.kernelPressureLevel)), thermal: \(thermalStateName(monitor.thermalState)), power mode: \(monitor.lowPowerMode ? "low power" : "normal")\n"
-    let sessionSwapOut = monitor.memoryStats.swapOutsBytes > monitor.launchSwapOutsBytes ? monitor.memoryStats.swapOutsBytes - monitor.launchSwapOutsBytes : 0
-    let sessionSwapIn = monitor.memoryStats.swapInsBytes > monitor.launchSwapInsBytes ? monitor.memoryStats.swapInsBytes - monitor.launchSwapInsBytes : 0
-    let lastIODesc = monitor.lastSwapIODate.map { "\(max(0, Int(Date().timeIntervalSince($0) / 60))) min ago" } ?? "none since launch"
-    out += "swap rates: in \(String(format: "%.1f", monitor.swapInRateMBs)) MB/s, out \(String(format: "%.1f", monitor.swapOutRateMBs)) MB/s; session out: \(gib(sessionSwapOut)) GiB, session in: \(gib(sessionSwapIn)) GiB; last swap io: \(lastIODesc)\n"
+    out += "Swap On Disk: \(gib(mem.swapUsedBytes)) GiB\n"
+    out += "Swap Rate In / Out: \(String(format: "%.\(UnitScale.mb.decimals)f", monitor.swapInRateMBs)) / \(String(format: "%.\(UnitScale.mb.decimals)f", monitor.swapOutRateMBs)) MiB/s\n"
+    out += "Swap Session In / Out: \(gib(sessionSwapIn)) / \(gib(sessionSwapOut)) GiB\n"
+    out += "Swap Last I/O: \(lastIODesc)\n"
+
+    // [GPU]: hero, stage pair, then the memory budget card: the wired limit
+    // pair heads it (headroom first, as in the UI), then the two claims.
+    out += "\n[GPU]\n"
+    out += "GPU Utilization: \(gpu.deviceUtilization)%\n"
+    out += "Renderer Utilization: \(gpu.rendererUtilization)%\n"
+    out += "Tiler Utilization: \(gpu.tilerUtilization)%\n"
     if monitor.wiredLimitMB > 0 {
         let limitBytes = UInt64(monitor.wiredLimitMB) * 1_048_576
-        let headroom = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
-        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB gpu wired limit; headroom at most \(gib(headroom)) GiB (limit caps gpu wiring only)\n"
+        let headroom = limitBytes > gpu.inUseMemory ? limitBytes - gpu.inUseMemory : 0
+        out += "Wired Limit Headroom: at most \(gib(headroom)) GiB\n"
+        out += "Wired Limit: \(gib(limitBytes)) GiB (iogpu.wired_limit_mb; caps GPU wiring only)\n"
     } else if monitor.defaultWiredLimitBytes > 0 {
         let limitBytes = monitor.defaultWiredLimitBytes
-        let headroom = limitBytes > monitor.gpuStats.inUseMemory ? limitBytes - monitor.gpuStats.inUseMemory : 0
-        out += "wired: \(gib(mem.wiredBytes)) GiB of \(gib(limitBytes)) GiB gpu wired limit (macOS default via Metal recommendedMaxWorkingSetSize; iogpu.wired_limit_mb unset); headroom at most \(gib(headroom)) GiB\n"
+        let headroom = limitBytes > gpu.inUseMemory ? limitBytes - gpu.inUseMemory : 0
+        out += "Wired Limit Headroom: at most \(gib(headroom)) GiB\n"
+        out += "Wired Limit: \(gib(limitBytes)) GiB (macOS default via Metal recommendedMaxWorkingSetSize; iogpu.wired_limit_mb unset; caps GPU wiring only)\n"
     } else {
-        out += "wired: \(gib(mem.wiredBytes)) GiB (wired limit: macOS default, iogpu.wired_limit_mb unset)\n"
+        out += "Wired Limit Headroom: n/a\n"
+        out += "Wired Limit: macOS default (unknown; no Metal device)\n"
     }
-    if let evt = monitor.lastPressureEvent {
-        let mins = Int(Date().timeIntervalSince(evt) / 60)
-        out += "last pressure event: \(mins) min ago this session"
-        out += monitor.lastEventGrowers.isEmpty ? "\n" : "; grew most before: \(monitor.lastEventGrowers.joined(separator: ", "))\n"
-    } else {
-        out += "last pressure event: none observed this session\n"
-    }
-    out += "\n[GPU now]\n"
-    out += "utilization: \(gpu.deviceUtilization)% (renderer \(gpu.rendererUtilization)%, tiler \(gpu.tilerUtilization)%)\n"
-    out += "memory in-use: \(gib(gpu.inUseMemory)) GiB, mapped: \(gib(gpu.allocatedMemory)) GiB\n"
-    out += "\n[CPU now]\n"
-    out += "overall: \(pct(cpu.overall)), P-cores: \(pct(cpu.performance)), E-cores: \(pct(cpu.efficiency))\n"
-    out += "per-core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ","))\n"
-    out += "\n[HISTORY ~5min, 2s samples, oldest->newest, values are %]\n"
-    out += "used (strict): \(seriesSummary(monitor.memoryHistory))\n"
+    out += "GPU Memory In-Use: \(gib(gpu.inUseMemory)) GiB\n"
+    out += "GPU Memory Mapped: \(gib(gpu.allocatedMemory)) GiB\n"
+
+    // [CPU]: hero, then the cores card left to right (E-cluster leads in the UI).
+    out += "\n[CPU]\n"
+    out += "CPU Utilization: \(pct(cpu.overall))\n"
+    out += "E-Core Utilization: \(pct(cpu.efficiency))\n"
+    out += "P-Core Utilization: \(pct(cpu.performance))\n"
+    out += "Per-Core: \(cpu.perCore.map { String(Int(($0 * 100).rounded())) }.joined(separator: ",")) (E-cores first)\n"
+
+    out += "\n[MEMORY HISTORY] (~5 min, 2 s samples, oldest->newest, values are % of total unless noted)\n"
+    out += "Memory Used (Strict): \(seriesSummary(monitor.memoryHistory))\n"
     out += "  series: \(seriesCompact(monitor.memoryHistory))\n"
-    let peakUsedFrac = monitor.memoryHistory.max() ?? 0
-    out += "minimum available seen: \(gib(UInt64(Double(mem.totalBytes) * max(0, 1 - peakUsedFrac)))) GiB (lowest point in window)\n"
-    out += "gpu util: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
-    out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
-    out += "gpu mem in-use: \(seriesSummary(monitor.gpuMemHistory))\n"
-    out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
-    out += "gpu mem mapped: \(seriesSummary(monitor.gpuMappedHistory))\n"
-    out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
-    out += "cpu overall: \(seriesSummary(monitor.cpuHistory))\n"
-    out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
-    out += "cpu p-cores: \(seriesSummary(monitor.pCoreHistory))\n"
-    out += "  series: \(seriesCompact(monitor.pCoreHistory))\n"
-    out += "cpu e-cores: \(seriesSummary(monitor.eCoreHistory))\n"
-    out += "  series: \(seriesCompact(monitor.eCoreHistory))\n"
-    out += "(per-core history omitted by design: the cluster series above cover diagnosis; per-core is snapshot-only in [CPU now])\n"
-    out += "gpu renderer: \(seriesSummary(monitor.rendererHistory.map { Double($0) / 100.0 }))\n"
-    out += "  series: \(seriesInts(monitor.rendererHistory))\n"
-    out += "gpu tiler: \(seriesSummary(monitor.tilerHistory.map { Double($0) / 100.0 }))\n"
-    out += "  series: \(seriesInts(monitor.tilerHistory))\n"
-    out += "swap in rate MB/s: series: \(seriesRaw(monitor.swapInRateHistory))\n"
-    out += "swap out rate MB/s: series: \(seriesRaw(monitor.swapOutRateHistory))\n"
-    out += "swap on disk GiB: series: \(seriesRaw(monitor.swapOnDiskHistory, "%.2f"))\n"
-    out += "kernel pressure level (1 normal / 2 warn / 4 critical): series: \(seriesInts(monitor.pressureLevelHistory))\n"
-    out += "thermal state (0 nominal / 1 fair / 2 serious / 3 critical): series: \(seriesInts(monitor.thermalHistory))\n"
-    out += "allocation partition (% of total; reserved, gpu in-use wired, other wired, app, compressed, purgeable, speculative, file-backed, unallocated):\n"
-    let allocNames = ["reserved", "gpu-in-use", "other-wired", "app", "compressed", "purgeable", "speculative", "file-backed", "unallocated"]
-    for (i, nm) in allocNames.enumerated() {
+    out += "Allocation partition, % of total per component:\n"
+    for (i, nm) in allocComponentNames.enumerated() {
         out += "  \(nm): \(seriesCompact(monitor.allocHistory.map { $0[i] }))\n"
     }
-    out += "\n[PROCESSES, recent CPU over ~5s window]\n"
+    out += "Swap Rate In (MiB/s): \(seriesRaw(monitor.swapInRateHistory))\n"
+    out += "Swap Rate Out (MiB/s): \(seriesRaw(monitor.swapOutRateHistory))\n"
+    out += "Swap On Disk (GiB): \(seriesRaw(monitor.swapOnDiskHistory, "%.\(UnitScale.gb.decimals)f"))\n"
+    out += "Pressure Level (1 normal / 2 warn / 4 critical): \(seriesInts(monitor.pressureLevelHistory))\n"
+
+    out += "\n[GPU HISTORY] (values are % except memory, which is % of total unified)\n"
+    out += "GPU Utilization: \(seriesSummary(monitor.gpuHistory.map { Double($0) / 100.0 }))\n"
+    out += "  series: \(monitor.gpuHistory.map(String.init).joined(separator: ","))\n"
+    out += "Renderer Utilization: \(seriesSummary(monitor.rendererHistory.map { Double($0) / 100.0 }))\n"
+    out += "  series: \(seriesInts(monitor.rendererHistory))\n"
+    out += "Tiler Utilization: \(seriesSummary(monitor.tilerHistory.map { Double($0) / 100.0 }))\n"
+    out += "  series: \(seriesInts(monitor.tilerHistory))\n"
+    out += "GPU Memory In-Use: \(seriesSummary(monitor.gpuMemHistory))\n"
+    out += "  series: \(seriesCompact(monitor.gpuMemHistory))\n"
+    out += "GPU Memory Mapped: \(seriesSummary(monitor.gpuMappedHistory))\n"
+    out += "  series: \(seriesCompact(monitor.gpuMappedHistory))\n"
+
+    out += "\n[CPU HISTORY] (values are %)\n"
+    out += "CPU Utilization: \(seriesSummary(monitor.cpuHistory))\n"
+    out += "  series: \(seriesCompact(monitor.cpuHistory))\n"
+    out += "E-Core Utilization: \(seriesSummary(monitor.eCoreHistory))\n"
+    out += "  series: \(seriesCompact(monitor.eCoreHistory))\n"
+    out += "P-Core Utilization: \(seriesSummary(monitor.pCoreHistory))\n"
+    out += "  series: \(seriesCompact(monitor.pCoreHistory))\n"
+    out += "(per-core history omitted by design: the cluster series above cover diagnosis; per-core is snapshot-only in [CPU])\n"
+
+    out += "\n[DEVICE HISTORY]\n"
+    out += "Thermal State (0 nominal / 1 fair / 2 serious / 3 critical): \(seriesInts(monitor.thermalHistory))\n"
+    out += "\n[PROCESSES] (snapshot; CPU over the last ~5 s window; growth per 5 s refresh; MiB throughout)\n"
     out += "top by footprint:\n"
     for p in monitor.processes.sorted(by: { $0.residentMB > $1.residentMB }).prefix(15) {
-        out += String(format: "%9.0f MB  %+6.0f MB/5s  %5.1f%% CPU  %@\n", p.residentMB, p.growthMB, p.cpuPercent, p.name)
+        out += String(format: "\(mibF(9)) MiB  %+6.0f MiB/5s  %5.1f%% CPU  %@\n", p.residentMB, p.growthMB, p.cpuPercent, p.name)
     }
     out += "top by cpu:\n"
     for p in monitor.processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(5) where p.cpuPercent > 0.5 {
-        out += String(format: "%6.1f%% CPU  %9.0f MB  %@\n", p.cpuPercent, p.residentMB, p.name)
+        out += String(format: "%6.1f%% CPU  \(mibF(9)) MiB  %@\n", p.cpuPercent, p.residentMB, p.name)
     }
     out += "=== END REPORT ===\n"
     return out
@@ -834,17 +877,67 @@ func copyPerformanceReport(monitor: SystemMonitor) {
 
 // MARK: - Formatting
 
-func formatMemory(_ bytes: UInt64) -> String {
-    let gb = Double(bytes) / 1_073_741_824
-    if gb >= 1.0 { return String(format: "%.1f GB", gb) }
-    let mb = Double(bytes) / 1_048_576
-    if mb >= 1.0 { return String(format: "%.0f MB", mb) }
-    return String(format: "%.0f KB", Double(bytes) / 1024)
+// MARK: - Units Core
+// The single source of truth for memory units. Values are binary-scaled
+// everywhere (2^40 / 2^30 / 2^20 / 2^10): the same numbers Apple's RAM
+// convention labels TB/GB/MB/KB and SI labels TiB/GiB/MiB/KiB. The
+// centralized class split:
+//   ui dialect: Apple vernacular labels (GB/MB/KB), auto-scaling to the
+//     largest unit >= 1 so small values keep their information.
+//   report dialect: SI-exact labels (GiB/MiB/KiB), fixed scale per line so
+//     machine consumers never guess and columns stay comparable.
+// Rounding is global PER SCALE and applies to both dialect labels alike:
+// TB/TiB and GB/GiB 2 decimals, MB/MiB 1, KB/KiB 0. Any format string that
+// prints a scaled value derives its decimals from the scale, never inline.
+// Sanctioned exception classes (deliberate, all named here):
+//   axis labels: compact single-letter 0-decimal ("16G"), graph grammar;
+//   delta badges and growers: whole-number MB ("+840 MB"), glance deltas;
+//   the swap rate cell: adaptive decimals below/above 10 MB/s, a floor-fit
+//     ruling that trumps the global MB rule in that one cell.
+// Consciously out of scope: percentages (their own tiny grammar) and the
+// samplers' page-size arithmetic (measurement math, not display units).
+enum UnitScale: Int {
+    case kb = 0, mb, gb, tb  // tb included so the scale has no ceiling;
+                             // no unified-memory Mac approaches it today
+    var divisor: Double {
+        switch self {
+        case .kb: return 1024
+        case .mb: return 1_048_576
+        case .gb: return 1_073_741_824
+        case .tb: return 1_099_511_627_776
+        }
+    }
+    var uiLabel: String {
+        switch self { case .kb: return "KB"; case .mb: return "MB"; case .gb: return "GB"; case .tb: return "TB" }
+    }
+    var reportLabel: String {
+        switch self { case .kb: return "KiB"; case .mb: return "MiB"; case .gb: return "GiB"; case .tb: return "TiB" }
+    }
+    var decimals: Int {
+        switch self { case .kb: return 0; case .mb: return 1; case .gb, .tb: return 2 }
+    }
 }
-
-func formatMB(_ mb: Double) -> String {
-    if mb >= 1024 { return String(format: "%.1f GB", mb / 1024) }
-    return String(format: "%.0f MB", mb)
+func autoScale(_ bytes: Double) -> UnitScale {
+    if bytes >= UnitScale.tb.divisor { return .tb }
+    if bytes >= UnitScale.gb.divisor { return .gb }
+    if bytes >= UnitScale.mb.divisor { return .mb }
+    return .kb
+}
+func formatScaled(_ bytes: Double, _ scale: UnitScale, report: Bool) -> String {
+    String(format: "%.\(scale.decimals)f %@", bytes / scale.divisor, report ? scale.reportLabel : scale.uiLabel)
+}
+// UI-dialect conveniences. Parameter units are explicit in the signatures:
+// these two take already-scaled values because their call sites hold them
+// natively (process figures in MiB, graph math in GB).
+func formatMB(_ mibValue: Double) -> String {
+    // MB floor is deliberate: process figures never display as KB.
+    formatScaled(mibValue * UnitScale.mb.divisor, mibValue >= 1024 ? .gb : .mb, report: false)
+}
+func uiGB(_ gbValue: Double) -> String {
+    String(format: "%.\(UnitScale.gb.decimals)f GB", gbValue)
+}
+func formatMemory(_ bytes: UInt64) -> String {
+    formatScaled(Double(bytes), autoScale(Double(bytes)), report: false)
 }
 
 // MARK: - Views
@@ -1532,8 +1625,7 @@ struct ContentView: View {
     @State private var allocShowHistory = false
     // Scrub position over the allocation area chart, local to the canvas.
     @State private var allocScrub: CGPoint? = nil
-    // Short names for the dense slice readout, in bar order.
-    private let allocShortNames = ["Reserved", "Wired \u{00B7} GPU In-Use", "Wired \u{00B7} other", "App", "Compressed", "Purgeable", "Speculative", "File-backed", "Unallocated"]
+
     // Launch fit state: corrections converge during a short launch window,
     // comparing the content's and viewport's BOTTOM EDGES in global space, so
     // any inset between the measured boxes cancels instead of hiding overflow
@@ -1765,7 +1857,7 @@ struct ContentView: View {
                                 .onHover { h in if h { hoveredAllocKeys = ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] } else if hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] { hoveredAllocKeys = [] } }
                             SparklineView(data: monitor.memoryHistory, color: headroomColor, maxValue: 1.0,
                                           showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) },
-                                          hoverLabel: { f in String(format: "%.1f GB", f * totalGB) })
+                                          hoverLabel: { f in uiGB(f * totalGB) })
                                 .frame(height: 60)
                         }
                         .padding(12)
@@ -1887,7 +1979,7 @@ struct ContentView: View {
                         // The five primary readouts head the card they caption; the chart
                         // and its cache-tier legend follow.
                         HStack(spacing: 6) {
-                            StatItem(label: "RESERVED", value: formatMemory(monitor.memoryStats.kernelOtherBytes), color: reservedBrown)
+                            StatItem(label: allocComponentNames[0].uppercased(), value: formatMemory(monitor.memoryStats.kernelOtherBytes), color: reservedBrown)
                                 .fixedSize()
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
@@ -1903,7 +1995,7 @@ struct ContentView: View {
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["gpuInUse", "wiredOther"] ? 0.10 : 0.05)))
                                 .contentShape(Rectangle())
                                 .onHover { h in if h { hoveredAllocKeys = ["gpuInUse", "wiredOther"] } else if hoveredAllocKeys == ["gpuInUse", "wiredOther"] { hoveredAllocKeys = [] } }
-                            StatItem(label: "APP", value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
+                            StatItem(label: allocComponentNames[3].uppercased(), value: formatMemory(monitor.memoryStats.appBytes), color: .blue)
                                 .fixedSize()
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
@@ -1911,7 +2003,7 @@ struct ContentView: View {
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["app"] ? 0.10 : 0.05)))
                                 .contentShape(Rectangle())
                                 .onHover { h in if h { hoveredAllocKeys = ["app"] } else if hoveredAllocKeys == ["app"] { hoveredAllocKeys = [] } }
-                            StatItem(label: "COMPRESSED", value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
+                            StatItem(label: allocComponentNames[4].uppercased(), value: formatMemory(monitor.memoryStats.compressedBytes), color: .orange)
                                 .fixedSize()
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
@@ -1951,7 +2043,7 @@ struct ContentView: View {
                         let unallocatedB = Double(monitor.memoryStats.freeCountBytes + monitor.memoryStats.throttledBytes)
                         // Shared partition inputs: both chart modes read these; the bar
                         // component and the area canvas can never disagree on them.
-                        let allocKeys = ["reserved", "gpuInUse", "wiredOther", "app", "compressed", "purgeable", "speculative", "fileBacked", "unallocated"]
+                        let allocKeys = allocComponentKeys
                         let allocColors: [Color] = [reservedBrown, gpuPurple, gpuPurpleDark, .blue, .orange,
                                                     Color.gray.opacity(0.42), Color.gray.opacity(0.32), Color.gray.opacity(0.22), Color.gray.opacity(0.10)]
                         let fracs: [Double] = [kernelRemB / total, gpuActive / total, wiredOther / total,
@@ -2075,7 +2167,7 @@ struct ContentView: View {
                                                             RoundedRectangle(cornerRadius: 1)
                                                                 .fill(allocColors[i])
                                                                 .frame(width: 6, height: 6)
-                                                            Text(allocShortNames[i])
+                                                            Text(allocComponentNames[i])
                                                                 .font(.system(size: 8))
                                                                 .foregroundColor(band == i ? .primary : .secondary)
                                                             Spacer(minLength: 6)
@@ -2086,10 +2178,10 @@ struct ContentView: View {
                                                     }
                                                 }
                                                 .padding(6)
-                                                .frame(width: 150)
+                                                .frame(width: 190)
                                                 .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .windowBackgroundColor).opacity(0.92)))
                                                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.15), lineWidth: 1))
-                                                .offset(x: min(max(cx + 8, 4), areaW - 154),
+                                                .offset(x: min(max(cx + 8, 4), areaW - 194),
                                                         y: min(max(pt.y + 8, 4), plotH - 122))
                                                 .allowsHitTesting(false)
                                                 }
@@ -2127,23 +2219,23 @@ struct ContentView: View {
                             // four Available tiers.
                             ViewThatFits(in: .horizontal) {
                                 HStack(spacing: 6) {
-                                    legendChip(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory), keys: ["gpuInUse"])
-                                    legendChip(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)), keys: ["wiredOther"])
-                                    legendChip(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)), keys: ["purgeable"])
-                                    legendChip(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)), keys: ["speculative"])
-                                    legendChip(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)), keys: ["fileBacked"])
-                                    legendChip(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)), keys: ["unallocated"])
+                                    legendChip(color: gpuPurple, label: allocComponentNames[1], value: formatMemory(monitor.gpuStats.inUseMemory), keys: ["gpuInUse"])
+                                    legendChip(color: gpuPurpleDark, label: allocComponentNames[2], value: formatMemory(UInt64(wiredOther)), keys: ["wiredOther"])
+                                    legendChip(color: .gray.opacity(0.42), label: allocComponentNames[5], value: formatMemory(UInt64(purgeableB)), keys: ["purgeable"])
+                                    legendChip(color: .gray.opacity(0.32), label: allocComponentNames[6], value: formatMemory(UInt64(speculativeB)), keys: ["speculative"])
+                                    legendChip(color: .gray.opacity(0.22), label: allocComponentNames[7], value: formatMemory(UInt64(fileCacheB)), keys: ["fileBacked"])
+                                    legendChip(color: .gray.opacity(0.10), label: allocComponentNames[8], value: formatMemory(UInt64(unallocatedB)), keys: ["unallocated"])
                                 }
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack(spacing: 6) {
-                                        legendChip(color: gpuPurple, label: "Wired - GPU In-Use", value: formatMemory(monitor.gpuStats.inUseMemory), keys: ["gpuInUse"])
-                                        legendChip(color: gpuPurpleDark, label: "Wired - GPU Idle / Non-GPU", value: formatMemory(UInt64(wiredOther)), keys: ["wiredOther"])
+                                        legendChip(color: gpuPurple, label: allocComponentNames[1], value: formatMemory(monitor.gpuStats.inUseMemory), keys: ["gpuInUse"])
+                                        legendChip(color: gpuPurpleDark, label: allocComponentNames[2], value: formatMemory(UInt64(wiredOther)), keys: ["wiredOther"])
                                     }
                                     HStack(spacing: 6) {
-                                        legendChip(color: .gray.opacity(0.42), label: "Purgeable", value: formatMemory(UInt64(purgeableB)), keys: ["purgeable"])
-                                        legendChip(color: .gray.opacity(0.32), label: "Speculative", value: formatMemory(UInt64(speculativeB)), keys: ["speculative"])
-                                        legendChip(color: .gray.opacity(0.22), label: "File-Backed", value: formatMemory(UInt64(fileCacheB)), keys: ["fileBacked"])
-                                        legendChip(color: .gray.opacity(0.10), label: "Unallocated", value: formatMemory(UInt64(unallocatedB)), keys: ["unallocated"])
+                                        legendChip(color: .gray.opacity(0.42), label: allocComponentNames[5], value: formatMemory(UInt64(purgeableB)), keys: ["purgeable"])
+                                        legendChip(color: .gray.opacity(0.32), label: allocComponentNames[6], value: formatMemory(UInt64(speculativeB)), keys: ["speculative"])
+                                        legendChip(color: .gray.opacity(0.22), label: allocComponentNames[7], value: formatMemory(UInt64(fileCacheB)), keys: ["fileBacked"])
+                                        legendChip(color: .gray.opacity(0.10), label: allocComponentNames[8], value: formatMemory(UInt64(unallocatedB)), keys: ["unallocated"])
                                     }
                                 }
                             }
@@ -2299,7 +2391,7 @@ struct ContentView: View {
                                         note: monitor.wiredLimitMB > 0 ? "of \(formatMemory(inUseCapBytes)) wired limit" : "of \(formatMemory(monitor.memoryStats.totalBytes))")
                             SparklineView(data: monitor.gpuMemHistory, color: gpuPurple, maxValue: inUseCapFrac,
                                           showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * inUseCapGB) },
-                                          hoverLabel: { f in String(format: "%.1f GB", f * inUseCapGB) })
+                                          hoverLabel: { f in uiGB(f * inUseCapGB) })
                                 .frame(height: 60)
                         }
                         .padding(12)
@@ -2314,7 +2406,7 @@ struct ContentView: View {
                                         note: "of \(formatMemory(monitor.memoryStats.totalBytes))")
                             SparklineView(data: monitor.gpuMappedHistory.map { min($0, 1.0) }, color: gpuPurpleDark, maxValue: 1.0,
                                           showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) },
-                                          hoverLabel: { f in String(format: "%.1f GB", f * totalGB) })
+                                          hoverLabel: { f in uiGB(f * totalGB) })
                                 .frame(height: 60)
                         }
                         .padding(12)
