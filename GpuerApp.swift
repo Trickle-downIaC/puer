@@ -789,6 +789,8 @@ struct SparklineView: View {
     let sampleInterval: Double                 // seconds between samples (time axis)
     let showGrid: Bool                         // gridlines + gutter axis labels
     let yQuarterLabel: ((Double) -> String)?   // fraction (0.0...1.0) -> short label
+    let hoverLabel: ((Double) -> String)?      // fraction -> precise scrub readout
+    @State private var hoverX: CGFloat? = nil  // cursor x while scrubbing, local space
 
     // Fixed x-axis window in grid mode; keep in sync with SystemMonitor.maxHistory
     // (150 samples at 2s). Data anchors to the right edge (now) and grows leftward.
@@ -796,13 +798,15 @@ struct SparklineView: View {
 
     init(data: [Double], color: Color, maxValue: Double? = nil,
          sampleInterval: Double = 2.0, showGrid: Bool = false,
-         yQuarterLabel: ((Double) -> String)? = nil) {
+         yQuarterLabel: ((Double) -> String)? = nil,
+         hoverLabel: ((Double) -> String)? = nil) {
         self.data = data
         self.color = color
         self.maxValue = maxValue
         self.sampleInterval = sampleInterval
         self.showGrid = showGrid
         self.yQuarterLabel = yQuarterLabel
+        self.hoverLabel = hoverLabel
     }
 
     private func timeTicks(span: Double, interval: Double) -> [Double] {
@@ -898,6 +902,44 @@ struct SparklineView: View {
                         path.closeSubpath()
                     }
                     .fill(color.opacity(0.15))
+
+                    // Hover scrub: the whole plot is a hover surface; a subtle
+                    // vertical line marks the cursor, snapped to the nearest
+                    // sample, with the sample's value as a small chip. The left
+                    // region before history fills has no samples and shows nothing.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let p): hoverX = p.x
+                            case .ended: hoverX = nil
+                            }
+                        }
+                    if let hx = hoverX, plotW > 0 {
+                        let fx = min(max((hx - gutterW) / plotW, 0), 1)
+                        let age = Double(1 - fx) * span
+                        let idx = data.count - 1 - Int((age / sampleInterval).rounded())
+                        if idx >= 0 && idx < data.count {
+                            let frac = min(data[idx] / maxVal, 1.0)
+                            let sx = xForSample(idx)
+                            Path { p in
+                                p.move(to: CGPoint(x: sx, y: insetTop))
+                                p.addLine(to: CGPoint(x: sx, y: insetTop + plotH))
+                            }
+                            .stroke(Color.primary.opacity(0.25), lineWidth: 1)
+                            Circle()
+                                .fill(color)
+                                .frame(width: 5, height: 5)
+                                .position(x: sx, y: yFor(CGFloat(frac)))
+                            Text((hoverLabel ?? yQuarterLabel ?? { f in String(format: "%.0f", f * 100) })(frac))
+                                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                .foregroundColor(color)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.10)))
+                                .position(x: min(max(sx, gutterW + 22), w - 22), y: insetTop + 8)
+                        }
+                    }
                 }
             }
         }
@@ -1532,7 +1574,8 @@ struct ContentView: View {
                                 .contentShape(Rectangle())
                                 .onHover { h in if h { hoveredAllocKeys = ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] } else if hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] { hoveredAllocKeys = [] } }
                             SparklineView(data: monitor.memoryHistory, color: headroomColor, maxValue: 1.0,
-                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) },
+                                          hoverLabel: { f in String(format: "%.1f GB", f * totalGB) })
                                 .frame(height: 60)
                         }
                         .padding(12)
@@ -1867,7 +1910,8 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             graphHeader("GPU UTILIZATION", "\(monitor.gpuStats.deviceUtilization)%", gpuPurple, note: "last 5 min", valueSize: 25)
                             SparklineView(data: monitor.gpuHistory.map { Double($0) }, color: gpuPurple, maxValue: 100.0,
-                                          showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" })
+                                          showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" },
+                                          hoverLabel: { f in "\(Int((f * 100).rounded()))%" })
                                 .frame(height: 60)
                         }
                         .padding(12)
@@ -1938,7 +1982,8 @@ struct ContentView: View {
                             graphHeader("GPU MEM IN-USE", formatMemory(monitor.gpuStats.inUseMemory), gpuPurple,
                                         note: monitor.wiredLimitMB > 0 ? "of \(formatMemory(inUseCapBytes)) wired limit" : "of \(formatMemory(monitor.memoryStats.totalBytes))")
                             SparklineView(data: monitor.gpuMemHistory, color: gpuPurple, maxValue: inUseCapFrac,
-                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * inUseCapGB) })
+                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * inUseCapGB) },
+                                          hoverLabel: { f in String(format: "%.1f GB", f * inUseCapGB) })
                                 .frame(height: 60)
                         }
                         .padding(12)
@@ -1952,7 +1997,8 @@ struct ContentView: View {
                             graphHeader("GPU MEM MAPPED", formatMemory(monitor.gpuStats.allocatedMemory), gpuPurpleDark,
                                         note: "of \(formatMemory(monitor.memoryStats.totalBytes))")
                             SparklineView(data: monitor.gpuMappedHistory.map { min($0, 1.0) }, color: gpuPurpleDark, maxValue: 1.0,
-                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) })
+                                          showGrid: true, yQuarterLabel: { f in String(format: "%.0fG", f * totalGB) },
+                                          hoverLabel: { f in String(format: "%.1f GB", f * totalGB) })
                                 .frame(height: 60)
                         }
                         .padding(12)
@@ -1987,7 +2033,8 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             graphHeader("CPU UTILIZATION", "\(Int((monitor.cpuStats.overall * 100).rounded()))%", .blue, note: "last 5 min", valueSize: 25)
                             SparklineView(data: monitor.cpuHistory.map { $0 * 100 }, color: .blue, maxValue: 100.0,
-                                          showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" })
+                                          showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" },
+                                          hoverLabel: { f in "\(Int((f * 100).rounded()))%" })
                                 .frame(height: 60)
                         }
                         .padding(12)
