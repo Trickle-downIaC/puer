@@ -85,6 +85,21 @@ enum ProcessSortKey: String, CaseIterable {
     case pid = "PID"
 }
 
+// Launch fit: the metric columns stay individually scrollable, but the window
+// should open tall enough that none of them needs to scroll. Each metric
+// column's scroll content reports its height, each column frame reports its
+// viewport, and ContentView posts the launch deficit exactly once for the
+// window to absorb. Processes is exempt: its list always scrolls.
+struct ColumnContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+struct ColumnViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+extension Notification.Name { static let puerLaunchHeightDeficit = Notification.Name("PuerLaunchHeightDeficit") }
+
 // MARK: - System Info Helpers
 
 func getPhysicalMemory() -> UInt64 {
@@ -1206,7 +1221,17 @@ struct PerCoreBarsView: View {
 }
 
 // Fixed three-column layout: memory (500) + CPU (360) + processes (320) + 2 dividers.
-let windowWidth: CGFloat = 1520  // exactly the four columns' ideal widths, so launch seats every column at its ideal
+// Column width floors: the single source of truth. Column frames, the window
+// minimum, and the launch width all derive from these; change a floor here and
+// everything follows.
+let memoryColMinWidth: CGFloat = 500  // sized to the five-chip readout row, which never wraps
+let gpuColMinWidth: CGFloat = 402
+let cpuColMinWidth: CGFloat = 402
+let processesColMinWidth: CGFloat = 220
+// Launch width: the three launch-visible columns at their floors (Processes launches hidden).
+let windowWidth: CGFloat = memoryColMinWidth + gpuColMinWidth + cpuColMinWidth
+// Launch height before the fit-to-content correction: the layout measures its
+// tallest metric column once at launch and posts the deficit; see launch fit.
 let windowHeight: CGFloat = 720
 
 // GPU family: two solid shades on one royal-violet ladder; every GPU element
@@ -1277,6 +1302,17 @@ struct ContentView: View {
     // Allocation hover: keys of bar segments to outline, driven by the
     // readout row and the legend. WIRED and AVAILABLE map to their groups.
     @State private var hoveredAllocKeys: Set<String> = []
+    // Launch fit state: measured once, posted once.
+    @State private var launchFitContentH: CGFloat = 0
+    @State private var launchFitViewportH: CGFloat = 0
+    @State private var launchFitPosted = false
+
+    private func postLaunchFitIfReady() {
+        guard !launchFitPosted, launchFitContentH > 0, launchFitViewportH > 0 else { return }
+        launchFitPosted = true
+        let deficit = max(0, launchFitContentH - launchFitViewportH)
+        NotificationCenter.default.post(name: .puerLaunchHeightDeficit, object: nil, userInfo: ["deficit": deficit])
+    }
 
     // Headline stat cell: natural-size content in an equal-width frame.
     @ViewBuilder
@@ -1337,10 +1373,10 @@ struct ContentView: View {
     private var minWindowWidth: CGFloat {
         let topBarMin: CGFloat = 480  // final tier: title, icon toggles, icon pills, report icon; no variable-width text remains
         var columns: CGFloat = 0
-        if showMemory { columns += 500 }
-        if showGPU { columns += 402 }
-        if showCPU { columns += 402 }
-        if showProcesses { columns += 220 }
+        if showMemory { columns += memoryColMinWidth }
+        if showGPU { columns += gpuColMinWidth }
+        if showCPU { columns += cpuColMinWidth }
+        if showProcesses { columns += processesColMinWidth }
         return max(topBarMin, columns)
     }
 
@@ -1473,7 +1509,7 @@ struct ContentView: View {
                             // Total and the window folded into the note, the value
                             // prominent and alone top right, hover lighting its segments.
                             graphHeader("MEMORY USED (STRICT)", formatMemory(monitor.memoryStats.usedBytes), headroomColor,
-                                        note: "of \(formatMemory(monitor.memoryStats.totalBytes)) \u{00B7} last 5 min", valueSize: 22)
+                                        note: "of \(formatMemory(monitor.memoryStats.totalBytes)) \u{00B7} last 5 min", valueSize: 25)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hoveredAllocKeys == ["reserved", "app", "gpuInUse", "wiredOther", "compressed"] ? 0.10 : 0.05)))
@@ -1496,7 +1532,7 @@ struct ContentView: View {
                                 Text(usedLooseValue)
                                     .font(.system(size: 16, weight: .bold, design: .monospaced))
                                     .foregroundColor(.secondary)
-                                Text("strict + purgeable (Activity Monitor)")
+                                Text("activity monitor (strict + purgeable)")
                                     .font(.system(size: 9))
                                     .foregroundColor(.secondary.opacity(0.8))
                             }
@@ -1801,9 +1837,11 @@ struct ContentView: View {
 
                 }
                 .padding([.horizontal, .bottom], 16)
+                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.size.height) })
                 .padding(.top, 12)
             }
-            .frame(minWidth: 500, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)  // floor sized to the five-chip readout row, which never wraps
+            .frame(minWidth: memoryColMinWidth, idealWidth: memoryColMinWidth, maxWidth: .infinity, maxHeight: .infinity)  // ideal = floor so launch opens at minimum
+            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.size.height) })
             }
 
             if showGPU {
@@ -1818,7 +1856,7 @@ struct ContentView: View {
                         Text("Overview")
                             .font(.system(size: 13, weight: .semibold))
                         VStack(alignment: .leading, spacing: 8) {
-                            graphHeader("GPU UTILIZATION", "\(monitor.gpuStats.deviceUtilization)%", gpuPurple, note: "last 5 min", valueSize: 22)
+                            graphHeader("GPU UTILIZATION", "\(monitor.gpuStats.deviceUtilization)%", gpuPurple, note: "last 5 min", valueSize: 25)
                             SparklineView(data: monitor.gpuHistory.map { Double($0) }, color: gpuPurple, maxValue: 100.0,
                                           showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" })
                                 .frame(height: 60)
@@ -1917,9 +1955,11 @@ struct ContentView: View {
                     .cornerRadius(10)
                 }
                 .padding([.horizontal, .bottom], 16)
+                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.size.height) })
                 .padding(.top, 12)
             }
-            .frame(minWidth: 402, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: gpuColMinWidth, idealWidth: gpuColMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.size.height) })
             }
 
             if showCPU {
@@ -1935,7 +1975,7 @@ struct ContentView: View {
                         Text("Overview")
                             .font(.system(size: 13, weight: .semibold))
                         VStack(alignment: .leading, spacing: 8) {
-                            graphHeader("CPU UTILIZATION", "\(Int((monitor.cpuStats.overall * 100).rounded()))%", .blue, note: "last 5 min", valueSize: 22)
+                            graphHeader("CPU UTILIZATION", "\(Int((monitor.cpuStats.overall * 100).rounded()))%", .blue, note: "last 5 min", valueSize: 25)
                             SparklineView(data: monitor.cpuHistory.map { $0 * 100 }, color: .blue, maxValue: 100.0,
                                           showGrid: true, yQuarterLabel: { f in "\(Int(f * 100))" })
                                 .frame(height: 60)
@@ -1976,9 +2016,11 @@ struct ContentView: View {
 
                 }
                 .padding([.horizontal, .bottom], 16)
+                .background(GeometryReader { g in Color.clear.preference(key: ColumnContentHeightKey.self, value: g.size.height) })
                 .padding(.top, 12)
             }
-            .frame(minWidth: 402, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: cpuColMinWidth, idealWidth: cpuColMinWidth, maxWidth: .infinity, maxHeight: .infinity)
+            .background(GeometryReader { g in Color.clear.preference(key: ColumnViewportHeightKey.self, value: g.size.height) })
             }
 
             if showProcesses {
@@ -2035,7 +2077,7 @@ struct ContentView: View {
             }
             .padding([.horizontal, .bottom], 12)
             .padding(.top, 12)
-            .frame(minWidth: 220, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: processesColMinWidth, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
             }
             }
             // Rebuild the splits whenever the visible set changes: HSplitView
@@ -2043,6 +2085,8 @@ struct ContentView: View {
             // which can clip the first column off the left edge.
             .id("\(showMemory)\(showGPU)\(showCPU)\(showProcesses)")
         }
+        .onPreferenceChange(ColumnContentHeightKey.self) { h in launchFitContentH = h; postLaunchFitIfReady() }
+        .onPreferenceChange(ColumnViewportHeightKey.self) { h in launchFitViewportH = h; postLaunchFitIfReady() }
         // Columns no longer need traffic-light clearance; the top bar carries it.
         // No fixed height floor: with column toggles, the honest minimum is whatever
         // is visible, so bar-only mode can shrink to just the bar.
@@ -2077,6 +2121,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Assigning a hosting controller shrinks the window to the layout's fitting size;
         // force it back to the intended size so columns open at their ideal widths.
         window.setContentSize(NSSize(width: windowWidth, height: windowHeight))
+        // Launch fit: absorb the one-time deficit the layout reports, so the
+        // window opens tall enough that no metric column scrolls at launch.
+        NotificationCenter.default.addObserver(forName: .puerLaunchHeightDeficit, object: nil, queue: .main) { [weak self] note in
+            guard let self, let d = note.userInfo?["deficit"] as? CGFloat, d > 0 else { return }
+            let content = self.window.contentRect(forFrameRect: self.window.frame).size
+            self.window.setContentSize(NSSize(width: content.width, height: content.height + d))
+            self.window.center()
+        }
         window.center()
         window.isReleasedWhenClosed = false  // closing just hides it; we reopen the same window
         self.window = window
